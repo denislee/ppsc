@@ -248,34 +248,34 @@ func (sc *Scheduler) resolveMetro(ctx context.Context, set models.Settings) {
 // retried forever. A transient geocoding error is returned WITHOUT marking the
 // listing, so it is retried on the next run.
 func (sc *Scheduler) resolveOneMetro(ctx context.Context, t store.MetroTarget) error {
-	lat, lon := t.Latitude, t.Longitude
+	lat, lon, city := t.Latitude, t.Longitude, ""
 	if lat == 0 || lon == 0 {
 		q := metroQuery(t.Address, t.Neighborhood)
 		if q == "" {
-			return sc.store.SaveMetro(ctx, t.PropertyID, 0, 0, "", "", "", 0, 0, 0)
+			return sc.store.SaveMetro(ctx, t.PropertyID, 0, 0, "", "", "", "", 0, 0, 0)
 		}
-		if clat, clon, found, cached := sc.store.GetGeocode(ctx, q); cached {
+		if clat, clon, ccity, found, cached := sc.store.GetGeocode(ctx, q); cached {
 			if !found {
-				return sc.store.SaveMetro(ctx, t.PropertyID, 0, 0, "", "", "", 0, 0, 0)
+				return sc.store.SaveMetro(ctx, t.PropertyID, 0, 0, "", "", "", "", 0, 0, 0)
 			}
-			lat, lon = clat, clon
+			lat, lon, city = clat, clon, ccity
 		} else {
 			res, err := geocode.Query(ctx, sc.fetcher, q)
 			if err != nil {
 				return err // transient: leave unchecked so it retries next run
 			}
-			_ = sc.store.PutGeocode(ctx, q, res.Lat, res.Lon, res.Found)
+			_ = sc.store.PutGeocode(ctx, q, res.Lat, res.Lon, res.City, res.Found)
 			if !res.Found {
-				return sc.store.SaveMetro(ctx, t.PropertyID, 0, 0, "", "", "", 0, 0, 0)
+				return sc.store.SaveMetro(ctx, t.PropertyID, 0, 0, "", "", "", "", 0, 0, 0)
 			}
-			lat, lon = res.Lat, res.Lon
+			lat, lon, city = res.Lat, res.Lon, res.City
 		}
 	}
 	st, dist, found := metro.Nearest(lat, lon)
 	if !found {
-		return sc.store.SaveMetro(ctx, t.PropertyID, lat, lon, "", "", "", 0, 0, 0)
+		return sc.store.SaveMetro(ctx, t.PropertyID, lat, lon, city, "", "", "", 0, 0, 0)
 	}
-	return sc.store.SaveMetro(ctx, t.PropertyID, lat, lon, st.Name, st.Line, st.Color, dist, st.Lat, st.Lon)
+	return sc.store.SaveMetro(ctx, t.PropertyID, lat, lon, city, st.Name, st.Line, st.Color, dist, st.Lat, st.Lon)
 }
 
 // ResolveMetroByID resolves the nearest station for a single listing on demand

@@ -23,6 +23,7 @@ type Getter interface {
 type Result struct {
 	Lat   float64
 	Lon   float64
+	City  string // resolved municipality, e.g. "São Paulo" (best effort, may be "")
 	Found bool
 }
 
@@ -33,10 +34,11 @@ func Query(ctx context.Context, g Getter, query string) (Result, error) {
 		return Result{}, nil
 	}
 	u := "https://nominatim.openstreetmap.org/search?" + url.Values{
-		"q":            {query},
-		"format":       {"jsonv2"},
-		"limit":        {"1"},
-		"countrycodes": {"br"},
+		"q":              {query},
+		"format":         {"jsonv2"},
+		"limit":          {"1"},
+		"countrycodes":   {"br"},
+		"addressdetails": {"1"},
 	}.Encode()
 
 	body, err := g.Get(ctx, u)
@@ -44,8 +46,15 @@ func Query(ctx context.Context, g Getter, query string) (Result, error) {
 		return Result{}, fmt.Errorf("geocode %q: %w", query, err)
 	}
 	var hits []struct {
-		Lat string `json:"lat"`
-		Lon string `json:"lon"`
+		Lat     string `json:"lat"`
+		Lon     string `json:"lon"`
+		Address struct {
+			City         string `json:"city"`
+			Town         string `json:"town"`
+			Municipality string `json:"municipality"`
+			Village      string `json:"village"`
+			County       string `json:"county"`
+		} `json:"address"`
 	}
 	if err := json.Unmarshal([]byte(body), &hits); err != nil {
 		return Result{}, fmt.Errorf("geocode %q: decode: %w", query, err)
@@ -58,5 +67,16 @@ func Query(ctx context.Context, g Getter, query string) (Result, error) {
 	if err1 != nil || err2 != nil {
 		return Result{}, fmt.Errorf("geocode %q: bad coordinates", query)
 	}
-	return Result{Lat: lat, Lon: lon, Found: true}, nil
+	a := hits[0].Address
+	city := firstNonEmpty(a.City, a.Town, a.Municipality, a.Village, a.County)
+	return Result{Lat: lat, Lon: lon, City: city, Found: true}, nil
+}
+
+func firstNonEmpty(vs ...string) string {
+	for _, v := range vs {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

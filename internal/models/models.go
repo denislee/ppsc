@@ -46,6 +46,11 @@ type Property struct {
 	// Zero means "unknown / not yet geocoded".
 	Latitude  float64 `json:"latitude"`
 	Longitude float64 `json:"longitude"`
+	// City is the municipality resolved while geocoding (e.g. "São Paulo",
+	// "Diadema"). Empty until the listing has been geocoded. Source location
+	// fields are too inconsistent across sites to rely on, so this is the
+	// authoritative city used for filtering.
+	City string `json:"city,omitempty"`
 
 	// MetroChecked is set once the nearest-station lookup has run for this
 	// listing (so it is not retried every pass). The Metro* fields below hold

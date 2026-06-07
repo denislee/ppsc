@@ -64,7 +64,7 @@ $$(".tab").forEach((tab) =>
     $$(".view").forEach((v) => v.classList.toggle("hidden", v.id !== "view-" + name));
     if (name === "sites") loadSites();
     if (name === "settings") loadSettings();
-    if (name === "listings") loadListings();
+    if (name === "listings") { loadListings(); loadCities(); }
   })
 );
 
@@ -99,7 +99,7 @@ function pollDuringScrape() {
   let n = 0;
   const iv = setInterval(async () => {
     const running = await refreshStatus();
-    if (!running || ++n > 200) { clearInterval(iv); loadListings(); }
+    if (!running || ++n > 200) { clearInterval(iv); loadListings(); loadCities(); }
   }, 2000);
 }
 
@@ -107,7 +107,7 @@ function pollDuringScrape() {
 let listFilterTimer;
 let favoritesOnly = false;
 let itemsById = new Map(); // id -> property, for the detail view
-["#f-q", "#f-neigh", "#f-minprice", "#f-maxprice", "#f-minbeds", "#f-minarea", "#f-status", "#f-sort"].forEach((sel) =>
+["#f-q", "#f-city", "#f-neigh", "#f-minprice", "#f-maxprice", "#f-minbeds", "#f-minarea", "#f-status", "#f-sort"].forEach((sel) =>
   $(sel).addEventListener("input", () => { clearTimeout(listFilterTimer); listFilterTimer = setTimeout(loadListings, 300); })
 );
 $("#f-fav").addEventListener("click", () => {
@@ -118,14 +118,14 @@ $("#f-fav").addEventListener("click", () => {
 });
 $("#f-clear").addEventListener("click", () => {
   ["#f-q", "#f-neigh", "#f-minprice", "#f-maxprice", "#f-minbeds", "#f-minarea"].forEach((s) => ($(s).value = ""));
-  $("#f-status").value = ""; $("#f-sort").value = "newest";
+  $("#f-city").value = ""; $("#f-status").value = ""; $("#f-sort").value = "newest";
   if (favoritesOnly) { favoritesOnly = false; $("#f-fav").textContent = "♡ Favorites"; $("#f-fav").classList.remove("active-toggle"); }
   loadListings();
 });
 
 async function loadListings() {
   const p = new URLSearchParams({
-    q: $("#f-q").value, neighborhood: $("#f-neigh").value,
+    q: $("#f-q").value, city: $("#f-city").value, neighborhood: $("#f-neigh").value,
     min_price: $("#f-minprice").value, max_price: $("#f-maxprice").value,
     min_beds: $("#f-minbeds").value, min_area: $("#f-minarea").value,
     status: $("#f-status").value, sort: $("#f-sort").value,
@@ -144,6 +144,23 @@ async function loadListings() {
   } catch (e) {
     grid.replaceChildren(el(".empty", { text: "Error: " + e.message }));
   }
+}
+
+// loadCities (re)populates the city filter dropdown from the distinct
+// municipalities the server has geocoded so far, preserving the current
+// selection. Cities accrue as listings are geocoded, so this is refreshed on
+// boot, when entering the Listings tab, and after a scrape.
+async function loadCities() {
+  try {
+    const cities = await api("/api/cities");
+    const sel = $("#f-city");
+    const current = sel.value;
+    sel.replaceChildren(
+      el("option", { value: "", text: "All cities" }),
+      ...cities.map((c) => el("option", { value: c, text: c, selected: c === current }))
+    );
+    sel.value = current; // keep selection even if it's no longer in the list
+  } catch (e) { /* non-fatal */ }
 }
 
 // metroChip renders the nearest-station badge (coloured by subway line) shown
@@ -312,6 +329,7 @@ async function openDetail(p) {
   const photoWrap = el(".detail-photos", null, el(".gallery-empty", { text: "Loading photos…" }));
   const mapEl = el(".detail-map");
   const metroSummary = el(".metro-summary", null, el("span.muted", { text: "Locating nearest station…" }));
+  const cityFact = factRow("City", p.city); // value updated once geocoding resolves
 
   const favBtn = el("button.btn.fav", { text: p.favorite ? "♥ Liked" : "♡ Like" });
   if (p.favorite) favBtn.classList.add("active-toggle");
@@ -351,6 +369,7 @@ async function openDetail(p) {
       p.description ? el("p.detail-desc", { text: p.description }) : null,
       el(".detail-facts", null,
         factRow("Source", p.site_name),
+        cityFact,
         factRow("Status", p.status),
         factRow("Favorite", p.favorite ? "Yes" : "No"),
         factRow("Photos", String(p.photo_count || 0)),
@@ -376,10 +395,12 @@ async function openDetail(p) {
         m = await api(`/api/properties/${p.id}/metro`);
         Object.assign(p, {
           metro_checked: m.checked, metro_station: m.station, metro_line: m.line,
-          metro_color: m.color, metro_distance_m: m.distance_m,
+          metro_color: m.color, metro_distance_m: m.distance_m, city: m.city,
           latitude: m.property.lat, longitude: m.property.lon,
           metro_lat: m.metro.lat, metro_lon: m.metro.lon,
         });
+        const cityVal = cityFact.querySelector(".fact-v");
+        if (cityVal) cityVal.textContent = p.city || "—";
       }
       renderMetroMap(mapEl, metroSummary, m);
     } catch (e) {
@@ -659,5 +680,6 @@ $("#saveSettings").addEventListener("click", async () => {
 
 /* ---------- boot ---------- */
 loadListings();
+loadCities();
 refreshStatus();
 setInterval(refreshStatus, 8000);

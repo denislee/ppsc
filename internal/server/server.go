@@ -35,6 +35,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/scrape", s.handleScrape)
 
 	mux.HandleFunc("GET /api/properties", s.handleListProperties)
+	mux.HandleFunc("GET /api/cities", s.handleListCities)
 	mux.HandleFunc("POST /api/properties/{id}/status", s.handleSetStatus)
 	mux.HandleFunc("POST /api/properties/{id}/favorite", s.handleSetFavorite)
 	mux.HandleFunc("GET /api/properties/{id}/photos", s.handlePropertyPhotos)
@@ -110,6 +111,7 @@ func (s *Server) handleListProperties(w http.ResponseWriter, r *http.Request) {
 		MinBedrooms:   atoi(q.Get("min_beds")),
 		MinAreaM2:     atoi(q.Get("min_area")),
 		Neighborhood:  q.Get("neighborhood"),
+		City:          q.Get("city"),
 		Search:        q.Get("q"),
 		Sort:          q.Get("sort"),
 		FavoritesOnly: q.Get("favorites") == "1",
@@ -123,6 +125,22 @@ func (s *Server) handleListProperties(w http.ResponseWriter, r *http.Request) {
 		props = []models.Property{}
 	}
 	writeJSON(w, 200, props)
+}
+
+// handleListCities returns the distinct municipalities seen across listings,
+// for the city filter dropdown.
+func (s *Server) handleListCities(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := ctxOf(r)
+	defer cancel()
+	cities, err := s.store.ListCities(ctx)
+	if err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	if cities == nil {
+		cities = []string{}
+	}
+	writeJSON(w, 200, cities)
 }
 
 func (s *Server) handleSetStatus(w http.ResponseWriter, r *http.Request) {
@@ -203,6 +221,7 @@ func (s *Server) handlePropertyMetro(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{
 		"checked":    p.MetroChecked,
+		"city":       p.City,
 		"station":    p.MetroStation,
 		"line":       p.MetroLine,
 		"color":      p.MetroColor,
