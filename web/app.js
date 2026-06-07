@@ -230,6 +230,9 @@ $("#grid").addEventListener("click", async (e) => {
 const fmtDate = (s) => { const d = new Date(s); return isNaN(+d) ? "—" : d.toLocaleString(); };
 
 let detailMap; // current Leaflet map instance, torn down when the detail closes
+let currentDetailId = null; // id of the listing currently shown in the detail view
+let galleryImgs = [];       // the <img> nodes of the open listing, for j/k photo nav
+let currentPhotoIndex = 0;  // which gallery photo is "current" (highlighted)
 
 // metroShape normalises a property's metro fields into the same object the
 // /metro endpoint returns, so the renderer takes one shape either way.
@@ -294,6 +297,12 @@ function factRow(label, value) {
 // openDetail renders everything we know about a listing locally — full photo
 // gallery, all fields, and inline favorite/hide actions — without leaving the app.
 async function openDetail(p) {
+  // Tear down any prior map (e.g. when stepping through listings with j/k) so
+  // we never leak a Leaflet instance bound to a now-detached container.
+  if (detailMap) { detailMap.remove(); detailMap = undefined; }
+  currentDetailId = String(p.id);
+  galleryImgs = []; currentPhotoIndex = 0; // reset; repopulated once photos load
+
   const meta = [];
   if (p.bedrooms) meta.push("🛏 " + p.bedrooms + " bed");
   if (p.bathrooms) meta.push("🛁 " + p.bathrooms + " bath");
@@ -356,6 +365,7 @@ async function openDetail(p) {
     )
   );
   $("#detail").classList.remove("hidden");
+  $("#detail").scrollTop = 0; // start each listing at the top when navigating
 
   // Nearest station + map. Use what we already have; otherwise resolve on demand
   // (geocodes the address the first time, then it's cached on the server).
@@ -381,24 +391,67 @@ async function openDetail(p) {
   try {
     const photos = await api(`/api/properties/${p.id}/photos`);
     if (photos.length) {
-      photoWrap.replaceChildren(...photos.map((ph) => el("img", { src: "/photos/" + ph.local_path, loading: "lazy", alt: "" })));
+      const imgs = photos.map((ph) => el("img", { src: "/photos/" + ph.local_path, loading: "lazy", alt: "" }));
+      photoWrap.replaceChildren(...imgs);
+      galleryImgs = imgs;
     } else {
       const fallback = safeURL(p.image_url);
-      photoWrap.replaceChildren(fallback
-        ? el("img", { src: fallback, loading: "lazy", alt: "" })
-        : el(".gallery-empty", { text: "No photos yet. Enable “Download listing photos” in Filters & Schedule, then run a scrape." }));
+      const img = fallback ? el("img", { src: fallback, loading: "lazy", alt: "" }) : null;
+      photoWrap.replaceChildren(img
+        || el(".gallery-empty", { text: "No photos yet. Enable “Download listing photos” in Filters & Schedule, then run a scrape." }));
+      galleryImgs = img ? [img] : [];
     }
   } catch (e) {
     photoWrap.replaceChildren(el(".gallery-empty", { text: "Error loading photos: " + e.message }));
+    galleryImgs = [];
   }
 }
 function closeDetail() {
   if (detailMap) { detailMap.remove(); detailMap = undefined; }
+  currentDetailId = null;
+  galleryImgs = []; currentPhotoIndex = 0;
   $("#detail").classList.add("hidden");
 }
+
+// navigateDetail steps to the previous/next listing in the current grid order
+// while the detail view is open. delta is -1 (previous) or +1 (next). Clamps at
+// the ends — itemsById is a Map, so its key order matches the rendered grid.
+function navigateDetail(delta) {
+  if ($("#detail").classList.contains("hidden")) return;
+  const ids = [...itemsById.keys()];
+  const i = ids.indexOf(String(currentDetailId));
+  const j = i + delta;
+  if (i === -1 || j < 0 || j >= ids.length) return; // already at an end
+  const next = itemsById.get(ids[j]);
+  if (next) openDetail(next);
+}
+
+// navigatePhoto highlights and scrolls to the previous/next photo of the open
+// listing. delta is -1 (previous) or +1 (next); clamps at the ends.
+function navigatePhoto(delta) {
+  if (!galleryImgs.length) return;
+  const j = Math.min(galleryImgs.length - 1, Math.max(0, currentPhotoIndex + delta));
+  // No-op only once the current photo is already highlighted at an end.
+  if (j === currentPhotoIndex && galleryImgs[j].classList.contains("active")) return;
+  currentPhotoIndex = j;
+  galleryImgs.forEach((img, idx) => img.classList.toggle("active", idx === j));
+  galleryImgs[j].scrollIntoView({ behavior: "auto", block: "center" });
+}
+
 $("#detailClose").addEventListener("click", closeDetail);
 $("#detail").addEventListener("click", (e) => { if (e.target.id === "detail") closeDetail(); });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDetail(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { closeDetail(); return; }
+  if ($("#detail").classList.contains("hidden")) return;
+  // Don't hijack typing (the detail view has no inputs today, but be safe).
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+  switch (e.key) {
+    case "j": case "ArrowDown": e.preventDefault(); navigatePhoto(1); break;   // next photo
+    case "k": case "ArrowUp": e.preventDefault(); navigatePhoto(-1); break;    // previous photo
+    case "l": case "ArrowRight": e.preventDefault(); navigateDetail(1); break;  // next property
+    case "h": case "ArrowLeft": e.preventDefault(); navigateDetail(-1); break;  // previous property
+  }
+});
 
 /* ---------- sites ---------- */
 let sites = [];
