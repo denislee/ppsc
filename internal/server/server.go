@@ -38,6 +38,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/properties/{id}/status", s.handleSetStatus)
 	mux.HandleFunc("POST /api/properties/{id}/favorite", s.handleSetFavorite)
 	mux.HandleFunc("GET /api/properties/{id}/photos", s.handlePropertyPhotos)
+	mux.HandleFunc("GET /api/properties/{id}/metro", s.handlePropertyMetro)
 
 	// Serve downloaded photos from disk at /photos/<id>/NN.jpg.
 	mux.Handle("GET /photos/", http.StripPrefix("/photos/", http.FileServer(http.Dir(s.photoDir))))
@@ -179,6 +180,38 @@ func (s *Server) handlePropertyPhotos(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, pics)
 }
 
+// handlePropertyMetro resolves (if needed) and returns the listing's
+// nearest-station info: which station, its line/colour, the distance, and the
+// coordinates of both the property and the station (for drawing the map). The
+// lookup geocodes via Nominatim on first access, so allow a generous timeout.
+func (s *Server) handlePropertyMetro(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	id := atoi64(r.PathValue("id"))
+	if err := s.sched.ResolveMetroByID(ctx, id); err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	p, ok, err := s.store.GetProperty(ctx, id)
+	if err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	if !ok {
+		httpErr(w, 404, "not found")
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"checked":    p.MetroChecked,
+		"station":    p.MetroStation,
+		"line":       p.MetroLine,
+		"color":      p.MetroColor,
+		"distance_m": p.MetroDistanceM,
+		"property":   map[string]float64{"lat": p.Latitude, "lon": p.Longitude},
+		"metro":      map[string]float64{"lat": p.MetroLat, "lon": p.MetroLon},
+	})
+}
+
 // ---- sites ----
 
 func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
@@ -289,5 +322,5 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, set)
 }
 
-func atoi(s string) int       { v, _ := strconv.Atoi(s); return v }
-func atoi64(s string) int64   { v, _ := strconv.ParseInt(s, 10, 64); return v }
+func atoi(s string) int     { v, _ := strconv.Atoi(s); return v }
+func atoi64(s string) int64 { v, _ := strconv.ParseInt(s, 10, 64); return v }

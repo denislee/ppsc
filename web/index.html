@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PPSC · Property Search</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <link rel="stylesheet" href="style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🏠</text></svg>">
 </head>
@@ -91,9 +95,14 @@
     <p class="muted">When enabled, each new listing's detail page is fetched once and its photo gallery is downloaded to local disk (served at <code>/photos</code>). Capped per run so a fresh database doesn't fetch everything at once — the rest are picked up on later scrapes.</p>
     <label class="inline"><input id="s-dlphotos" type="checkbox"> Download listing photos to disk</label>
     <div class="grid2">
-      <label>Max photos per listing<input id="s-maxphotos" type="number" min="1"></label>
+      <label>Max photos per listing <span class="muted">(0 = all)</span><input id="s-maxphotos" type="number" min="0"></label>
       <label>Max detail pages per run<input id="s-maxfetch" type="number" min="1"></label>
     </div>
+    <h2>Nearest subway station</h2>
+    <p class="muted">Each listing's address is geocoded once (via OpenStreetMap Nominatim) to find the closest São Paulo Metrô station, shown on cards and mapped in the detail view. Capped per run so a fresh database doesn't geocode everything at once — the rest are resolved on later scrapes (or instantly when you open a listing).</p>
+    <label class="inline">Resolve at most
+      <input id="s-maxmetro" type="number" min="1" style="width:90px"> listings per run
+    </label>
     <div class="row-end"><button id="saveSettings" class="btn primary">Save settings</button></div>
   </div>
 </section>

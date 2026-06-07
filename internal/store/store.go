@@ -94,6 +94,15 @@ CREATE TABLE IF NOT EXISTS settings (
 	id    INTEGER PRIMARY KEY CHECK (id = 1),
 	json  TEXT NOT NULL
 );
+
+-- Cache of geocoded addresses so we never re-query Nominatim for the same
+-- text. found=0 caches a confirmed "no match" so dead addresses aren't retried.
+CREATE TABLE IF NOT EXISTS geocode_cache (
+	query TEXT PRIMARY KEY,
+	lat   REAL NOT NULL DEFAULT 0,
+	lon   REAL NOT NULL DEFAULT 0,
+	found INTEGER NOT NULL DEFAULT 0
+);
 `)
 	if err != nil {
 		return err
@@ -104,6 +113,16 @@ CREATE TABLE IF NOT EXISTS settings (
 	s.addColumnIfMissing("properties", "photos_fetched", "INTEGER NOT NULL DEFAULT 0")
 	s.addColumnIfMissing("properties", "photo_count", "INTEGER NOT NULL DEFAULT 0")
 	s.addColumnIfMissing("properties", "favorite", "INTEGER NOT NULL DEFAULT 0")
+	// Coordinates + nearest-metro snapshot (added with the metro feature).
+	s.addColumnIfMissing("properties", "latitude", "REAL NOT NULL DEFAULT 0")
+	s.addColumnIfMissing("properties", "longitude", "REAL NOT NULL DEFAULT 0")
+	s.addColumnIfMissing("properties", "metro_checked", "INTEGER NOT NULL DEFAULT 0")
+	s.addColumnIfMissing("properties", "metro_station", "TEXT NOT NULL DEFAULT ''")
+	s.addColumnIfMissing("properties", "metro_line", "TEXT NOT NULL DEFAULT ''")
+	s.addColumnIfMissing("properties", "metro_color", "TEXT NOT NULL DEFAULT ''")
+	s.addColumnIfMissing("properties", "metro_distance_m", "INTEGER NOT NULL DEFAULT 0")
+	s.addColumnIfMissing("properties", "metro_lat", "REAL NOT NULL DEFAULT 0")
+	s.addColumnIfMissing("properties", "metro_lon", "REAL NOT NULL DEFAULT 0")
 	// Indexes that depend on columns added above must come after the ALTERs,
 	// so this also works against databases created before those columns existed.
 	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_properties_photos ON properties(photos_fetched)`); err != nil {
@@ -227,15 +246,15 @@ func (s *Store) CountSites(ctx context.Context) (int, error) {
 func (s *Store) UpsertProperty(ctx context.Context, p *models.Property) (bool, error) {
 	now := time.Now()
 	res, err := s.db.ExecContext(ctx, `
-INSERT INTO properties(fingerprint,site_id,site_name,title,url,image_url,price,address,neighborhood,bedrooms,bathrooms,parking_spots,area_m2,description,status,first_seen,last_seen)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'new', ?, ?)
+INSERT INTO properties(fingerprint,site_id,site_name,title,url,image_url,price,address,neighborhood,bedrooms,bathrooms,parking_spots,area_m2,description,latitude,longitude,status,first_seen,last_seen)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'new', ?, ?)
 ON CONFLICT(fingerprint) DO UPDATE SET
 	last_seen=excluded.last_seen,
 	price=excluded.price,
 	title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE properties.title END,
 	image_url=CASE WHEN excluded.image_url<>'' THEN excluded.image_url ELSE properties.image_url END`,
 		p.Fingerprint, p.SiteID, p.SiteName, p.Title, p.URL, p.ImageURL, p.Price, p.Address, p.Neighborhood,
-		p.Bedrooms, p.Bathrooms, p.ParkingSpots, p.AreaM2, p.Description, now, now)
+		p.Bedrooms, p.Bathrooms, p.ParkingSpots, p.AreaM2, p.Description, p.Latitude, p.Longitude, now, now)
 	if err != nil {
 		return false, err
 	}
@@ -246,12 +265,12 @@ ON CONFLICT(fingerprint) DO UPDATE SET
 
 // PropertyQuery describes filtering/sorting for ListProperties.
 type PropertyQuery struct {
-	Status       string
-	MinPrice     int64
-	MaxPrice     int64
-	MinBedrooms  int
-	MinAreaM2    int
-	Neighborhood string
+	Status        string
+	MinPrice      int64
+	MaxPrice      int64
+	MinBedrooms   int
+	MinAreaM2     int
+	Neighborhood  string
 	Search        string
 	Sort          string // newest | price_asc | price_desc
 	FavoritesOnly bool
@@ -260,6 +279,7 @@ type PropertyQuery struct {
 
 func (s *Store) ListProperties(ctx context.Context, q PropertyQuery) ([]models.Property, error) {
 	sb := `SELECT id,fingerprint,site_id,site_name,title,url,image_url,price,address,neighborhood,bedrooms,bathrooms,parking_spots,area_m2,description,status,first_seen,last_seen,photos_fetched,photo_count,favorite,
+		latitude,longitude,metro_checked,metro_station,metro_line,metro_color,metro_distance_m,metro_lat,metro_lon,
 		(SELECT local_path FROM photos WHERE photos.property_id=properties.id ORDER BY ordinal LIMIT 1) AS thumb_path
 		FROM properties WHERE 1=1`
 	var args []any
@@ -318,19 +338,50 @@ func (s *Store) ListProperties(ctx context.Context, q PropertyQuery) ([]models.P
 	var out []models.Property
 	for rows.Next() {
 		var p models.Property
-		var photosFetched, favorite int
+		var photosFetched, favorite, metroChecked int
 		var thumb sql.NullString
 		if err := rows.Scan(&p.ID, &p.Fingerprint, &p.SiteID, &p.SiteName, &p.Title, &p.URL, &p.ImageURL, &p.Price,
 			&p.Address, &p.Neighborhood, &p.Bedrooms, &p.Bathrooms, &p.ParkingSpots, &p.AreaM2, &p.Description,
-			&p.Status, &p.FirstSeen, &p.LastSeen, &photosFetched, &p.PhotoCount, &favorite, &thumb); err != nil {
+			&p.Status, &p.FirstSeen, &p.LastSeen, &photosFetched, &p.PhotoCount, &favorite,
+			&p.Latitude, &p.Longitude, &metroChecked, &p.MetroStation, &p.MetroLine, &p.MetroColor,
+			&p.MetroDistanceM, &p.MetroLat, &p.MetroLon, &thumb); err != nil {
 			return nil, err
 		}
 		p.PhotosFetched = photosFetched != 0
 		p.Favorite = favorite != 0
+		p.MetroChecked = metroChecked != 0
 		p.ThumbPath = thumb.String
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// GetProperty returns a single listing by id (without its photo gallery). ok is
+// false when no such listing exists.
+func (s *Store) GetProperty(ctx context.Context, id int64) (models.Property, bool, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id,fingerprint,site_id,site_name,title,url,image_url,price,address,neighborhood,bedrooms,bathrooms,parking_spots,area_m2,description,status,first_seen,last_seen,photos_fetched,photo_count,favorite,
+		latitude,longitude,metro_checked,metro_station,metro_line,metro_color,metro_distance_m,metro_lat,metro_lon,
+		(SELECT local_path FROM photos WHERE photos.property_id=properties.id ORDER BY ordinal LIMIT 1) AS thumb_path
+		FROM properties WHERE id=?`, id)
+	var p models.Property
+	var photosFetched, favorite, metroChecked int
+	var thumb sql.NullString
+	err := row.Scan(&p.ID, &p.Fingerprint, &p.SiteID, &p.SiteName, &p.Title, &p.URL, &p.ImageURL, &p.Price,
+		&p.Address, &p.Neighborhood, &p.Bedrooms, &p.Bathrooms, &p.ParkingSpots, &p.AreaM2, &p.Description,
+		&p.Status, &p.FirstSeen, &p.LastSeen, &photosFetched, &p.PhotoCount, &favorite,
+		&p.Latitude, &p.Longitude, &metroChecked, &p.MetroStation, &p.MetroLine, &p.MetroColor,
+		&p.MetroDistanceM, &p.MetroLat, &p.MetroLon, &thumb)
+	if err == sql.ErrNoRows {
+		return models.Property{}, false, nil
+	}
+	if err != nil {
+		return models.Property{}, false, err
+	}
+	p.PhotosFetched = photosFetched != 0
+	p.Favorite = favorite != 0
+	p.MetroChecked = metroChecked != 0
+	p.ThumbPath = thumb.String
+	return p, true, nil
 }
 
 func (s *Store) SetPropertyStatus(ctx context.Context, id int64, status string) error {
@@ -422,6 +473,94 @@ func (s *Store) GetPhotos(ctx context.Context, propertyID int64) ([]models.Photo
 	return out, rows.Err()
 }
 
+// ---- Metro / geocoding ----
+
+// MetroTarget identifies a listing whose nearest-station lookup still needs to
+// run, with the data needed to locate it: existing coordinates (zero if the
+// listing must be geocoded) plus the address/neighborhood to geocode from.
+type MetroTarget struct {
+	PropertyID   int64
+	Latitude     float64
+	Longitude    float64
+	Address      string
+	Neighborhood string
+}
+
+// PropertiesNeedingMetro returns up to limit not-hidden listings whose nearest
+// station has not been computed yet and that have something to locate them by
+// (coordinates or an address/neighborhood), newest first.
+func (s *Store) PropertiesNeedingMetro(ctx context.Context, limit int) ([]MetroTarget, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,latitude,longitude,address,neighborhood FROM properties
+		WHERE metro_checked=0 AND status<>'hidden'
+		  AND ((latitude<>0 AND longitude<>0) OR address<>'' OR neighborhood<>'')
+		ORDER BY first_seen DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MetroTarget
+	for rows.Next() {
+		var t MetroTarget
+		if err := rows.Scan(&t.PropertyID, &t.Latitude, &t.Longitude, &t.Address, &t.Neighborhood); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// MetroTargetByID returns the locate-by data for a single listing. ok is false
+// when the listing doesn't exist or has already been resolved.
+func (s *Store) MetroTargetByID(ctx context.Context, id int64) (MetroTarget, bool, error) {
+	var t MetroTarget
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id,latitude,longitude,address,neighborhood FROM properties WHERE id=? AND metro_checked=0`, id).
+		Scan(&t.PropertyID, &t.Latitude, &t.Longitude, &t.Address, &t.Neighborhood)
+	if err == sql.ErrNoRows {
+		return MetroTarget{}, false, nil
+	}
+	if err != nil {
+		return MetroTarget{}, false, err
+	}
+	return t, true, nil
+}
+
+// SaveMetro records a listing's resolved coordinates and nearest-station
+// snapshot and marks it checked so the lookup is not repeated. A zero-value
+// snapshot (empty station) still marks it checked — meaning "located but no
+// station found / could not be geocoded".
+func (s *Store) SaveMetro(ctx context.Context, id int64, lat, lon float64, station, line, color string, distanceM int, stationLat, stationLon float64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE properties SET
+		latitude=?, longitude=?, metro_checked=1,
+		metro_station=?, metro_line=?, metro_color=?, metro_distance_m=?, metro_lat=?, metro_lon=?
+		WHERE id=?`,
+		lat, lon, station, line, color, distanceM, stationLat, stationLon, id)
+	return err
+}
+
+// GetGeocode returns a cached geocoding result for query. ok is false when the
+// query has not been cached yet.
+func (s *Store) GetGeocode(ctx context.Context, query string) (lat, lon float64, found, ok bool) {
+	var f int
+	err := s.db.QueryRowContext(ctx, `SELECT lat,lon,found FROM geocode_cache WHERE query=?`, query).Scan(&lat, &lon, &f)
+	if err != nil {
+		return 0, 0, false, false
+	}
+	return lat, lon, f != 0, true
+}
+
+// PutGeocode caches a geocoding result (including confirmed not-found ones).
+func (s *Store) PutGeocode(ctx context.Context, query string, lat, lon float64, found bool) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO geocode_cache(query,lat,lon,found) VALUES(?,?,?,?)
+		 ON CONFLICT(query) DO UPDATE SET lat=excluded.lat, lon=excluded.lon, found=excluded.found`,
+		query, lat, lon, boolToInt(found))
+	return err
+}
+
 // Stats are headline counts shown on the dashboard.
 type Stats struct {
 	Total     int `json:"total"`
@@ -467,11 +606,12 @@ func (s *Store) GetSettings(ctx context.Context) (models.Settings, error) {
 	if set.RequestDelaySeconds <= 0 {
 		set.RequestDelaySeconds = 5 // sane, polite default for older saved settings
 	}
-	if set.MaxPhotosPerListing <= 0 {
-		set.MaxPhotosPerListing = 20
-	}
+	// MaxPhotosPerListing of 0 is meaningful here: "download every photo".
 	if set.MaxPhotoFetchesPerRun <= 0 {
 		set.MaxPhotoFetchesPerRun = 25
+	}
+	if set.MaxMetroLookupsPerRun <= 0 {
+		set.MaxMetroLookupsPerRun = 50
 	}
 	return set, nil
 }
@@ -481,8 +621,9 @@ func defaultSettings() models.Settings {
 		IntervalMinutes:       360,
 		RequestDelaySeconds:   5,
 		DownloadPhotos:        true,
-		MaxPhotosPerListing:   20,
+		MaxPhotosPerListing:   0, // 0 = download all photos for each listing
 		MaxPhotoFetchesPerRun: 25,
+		MaxMetroLookupsPerRun: 50,
 	}
 }
 

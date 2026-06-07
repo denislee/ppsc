@@ -4,8 +4,8 @@
 //
 //   - "css":      parse server-rendered HTML with goquery CSS selectors.
 //   - "nextdata": extract the embedded __NEXT_DATA__ JSON that Next.js sites
-//                 (VivaReal, ZAP, OLX, QuintoAndar, ...) ship in the page and
-//                 map fields via dotted/indexed key paths.
+//     (VivaReal, ZAP, OLX, QuintoAndar, ...) ship in the page and
+//     map fields via dotted/indexed key paths.
 //
 // No headless browser is required, which keeps the app light enough to run
 // locally. Sites that render results purely client-side from an authenticated
@@ -298,6 +298,8 @@ func parseCSS(body string, site models.Site) ([]models.Property, error) {
 		p.ParkingSpots = parseInt(cssText(s, sel.ParkingSpots))
 		p.AreaM2 = parseInt(cssText(s, sel.AreaM2))
 		p.Description = cssText(s, sel.Description)
+		p.Latitude = parseFloat(cssText(s, sel.Latitude))
+		p.Longitude = parseFloat(cssText(s, sel.Longitude))
 		if p.Title != "" || p.URL != "" {
 			out = append(out, p)
 		}
@@ -513,6 +515,8 @@ func parseNextData(body string, site models.Site) ([]models.Property, error) {
 			ParkingSpots: parseInt(jsonStr(it, sel.ParkingSpots)),
 			AreaM2:       parseInt(jsonStr(it, sel.AreaM2)),
 			Description:  jsonStr(it, sel.Description),
+			Latitude:     parseFloat(jsonStr(it, sel.Latitude)),
+			Longitude:    parseFloat(jsonStr(it, sel.Longitude)),
 		}
 		if p.Title != "" || p.URL != "" {
 			out = append(out, p)
@@ -625,5 +629,16 @@ func parseInt(s string) int {
 		return 0
 	}
 	v, _ := strconv.Atoi(d)
+	return v
+}
+
+// parseFloat parses a decimal coordinate, tolerating a comma decimal separator.
+func parseFloat(s string) float64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	s = strings.ReplaceAll(s, ",", ".")
+	v, _ := strconv.ParseFloat(s, 64)
 	return v
 }

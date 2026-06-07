@@ -62,6 +62,11 @@ label input,label select{margin-top:4px}
 .card .meta{font-size:12px;color:var(--muted);display:flex;gap:10px;flex-wrap:wrap}
 .card .addr{font-size:12px;color:var(--muted)}
 .card .src{font-size:11px;color:var(--muted)}
+.metro{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text)}
+.metro-dot{width:9px;height:9px;border-radius:50%;flex:none;box-shadow:0 0 0 2px rgba(255,255,255,.12)}
+.metro-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.metro-dist{color:var(--muted);white-space:nowrap}
+.metro-dist::before{content:"·";margin-right:6px}
 .card .badge{display:inline-block;font-size:10px;padding:2px 6px;border-radius:6px;background:var(--accent);color:#fff;align-self:flex-start}
 .card .row{display:flex;gap:6px;margin-top:auto;padding-top:8px}
 .card .row .btn{flex:1;text-align:center;padding:6px}
@@ -118,6 +123,13 @@ label input,label select{margin-top:4px}
 .fact-l{color:var(--muted)}
 .detail-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .detail-actions a.btn{text-decoration:none}
+/* nearest-station block in the detail view */
+.metro-block{border-top:1px solid var(--line);padding-top:10px;margin-top:4px;display:flex;flex-direction:column;gap:8px}
+.metro-h{font-size:13px;margin:0;font-weight:600}
+.metro-summary{display:flex;align-items:center;gap:6px;font-size:13px;flex-wrap:wrap}
+.detail-map{height:220px;border-radius:10px;overflow:hidden;border:1px solid var(--line);background:var(--panel2)}
+.detail-map .leaflet-container{background:var(--panel2)}
+.leaflet-popup-content{margin:8px 10px;font:13px system-ui,sans-serif}
 @media(max-width:720px){.detail-inner{grid-template-columns:1fr}.detail-body{position:static}}
 
 /* toast */

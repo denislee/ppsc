@@ -42,6 +42,8 @@ const api = async (url, opts) => {
   return data;
 };
 const brl = (n) => (n > 0 ? "R$ " + n.toLocaleString("pt-BR") : "Preço não informado");
+// Human distance: metres under 1 km, else one-decimal km.
+const fmtDist = (m) => (m >= 1000 ? (m / 1000).toFixed(1).replace(".", ",") + " km" : Math.round(m) + " m");
 // Only allow http(s) URLs through; blocks javascript:/data: from scraped fields.
 const safeURL = (u) => (/^https?:\/\//i.test(u || "") ? u : "");
 
@@ -144,6 +146,17 @@ async function loadListings() {
   }
 }
 
+// metroChip renders the nearest-station badge (coloured by subway line) shown
+// on cards and in the detail view. Returns null when no station is known yet.
+function metroChip(p) {
+  if (!p.metro_station) return null;
+  return el(".metro", null,
+    el("span.metro-dot", { style: { background: p.metro_color || "#888" } }),
+    el("span.metro-name", { text: p.metro_station }),
+    el("span.metro-dist", { text: fmtDist(p.metro_distance_m) })
+  );
+}
+
 // Pick the most reliable thumbnail: a locally-downloaded photo (always loads,
 // served from /photos) beats the scraped image_url, which is often missing
 // (lazy-loaded list pages) or hotlink-protected.
@@ -172,6 +185,7 @@ function cardNode(p) {
     el(".price", { text: brl(p.price) }),
     el(".title", { text: p.title || "(untitled listing)" }),
     el(".addr", { text: p.neighborhood || p.address || "" }),
+    metroChip(p),
     meta.length ? el(".meta", null, ...meta.map((m) => el("span", { text: m }))) : null,
     el(".src", { text: p.site_name }),
     el(".row", null,
@@ -215,6 +229,64 @@ $("#grid").addEventListener("click", async (e) => {
 /* ---------- detail view ---------- */
 const fmtDate = (s) => { const d = new Date(s); return isNaN(+d) ? "—" : d.toLocaleString(); };
 
+let detailMap; // current Leaflet map instance, torn down when the detail closes
+
+// metroShape normalises a property's metro fields into the same object the
+// /metro endpoint returns, so the renderer takes one shape either way.
+function metroShape(p) {
+  return {
+    checked: p.metro_checked, station: p.metro_station, line: p.metro_line,
+    color: p.metro_color, distance_m: p.metro_distance_m,
+    property: { lat: p.latitude, lon: p.longitude },
+    metro: { lat: p.metro_lat, lon: p.metro_lon },
+  };
+}
+
+// renderMetroMap draws the property and its nearest station on an OSM map with a
+// line between them. Falls back to a text note when there's nothing to plot.
+function renderMetroMap(mapEl, summaryEl, m) {
+  const haveProp = m.property && m.property.lat && m.property.lon;
+  const haveStation = m.station && m.metro && m.metro.lat && m.metro.lon;
+
+  if (m.station) {
+    summaryEl.replaceChildren(
+      el("span.metro-dot", { style: { background: m.color || "#888" } }),
+      el("b", { text: m.station }),
+      el("span.muted", { text: " · " + (m.line || "") }),
+      haveProp && haveStation ? el("span", { text: " · " + fmtDist(m.distance_m) + " away" }) : null
+    );
+  } else {
+    summaryEl.replaceChildren(el("span.muted", {
+      text: m.checked ? "Couldn’t locate this listing on the map." : "Locating nearest station…",
+    }));
+  }
+
+  if (typeof L === "undefined" || !haveProp) { mapEl.style.display = "none"; return; }
+  mapEl.style.display = "";
+
+  const prop = [m.property.lat, m.property.lon];
+  detailMap = L.map(mapEl, { scrollWheelZoom: false, attributionControl: true });
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19, attribution: "© OpenStreetMap",
+  }).addTo(detailMap);
+
+  L.marker(prop).addTo(detailMap).bindPopup("🏠 Property");
+
+  if (haveStation) {
+    const station = [m.metro.lat, m.metro.lon];
+    const color = m.color || "#444";
+    L.circleMarker(station, { radius: 8, color, fillColor: color, fillOpacity: 1, weight: 2 })
+      .addTo(detailMap).bindPopup("🚇 " + m.station + " (" + (m.line || "") + ")");
+    L.polyline([prop, station], { color, weight: 4, opacity: 0.7, dashArray: "6 6" }).addTo(detailMap);
+    detailMap.fitBounds([prop, station], { padding: [40, 40] });
+  } else {
+    detailMap.setView(prop, 15);
+  }
+  // The map is created while the modal is animating in; recompute its size once
+  // the container has settled so tiles fill it correctly.
+  setTimeout(() => detailMap && detailMap.invalidateSize(), 60);
+}
+
 function factRow(label, value) {
   return el(".fact", null, el("span.fact-l", { text: label }), el("span.fact-v", { text: value || "—" }));
 }
@@ -229,6 +301,8 @@ async function openDetail(p) {
   if (p.area_m2) meta.push("📐 " + p.area_m2 + " m²");
 
   const photoWrap = el(".detail-photos", null, el(".gallery-empty", { text: "Loading photos…" }));
+  const mapEl = el(".detail-map");
+  const metroSummary = el(".metro-summary", null, el("span.muted", { text: "Locating nearest station…" }));
 
   const favBtn = el("button.btn.fav", { text: p.favorite ? "♥ Liked" : "♡ Like" });
   if (p.favorite) favBtn.classList.add("active-toggle");
@@ -264,6 +338,7 @@ async function openDetail(p) {
       el("h2.detail-title", { text: p.title || "(untitled listing)" }),
       el(".detail-addr", { text: [p.address, p.neighborhood].filter(Boolean).join(" · ") }),
       meta.length ? el(".detail-meta", null, ...meta.map((m) => el("span", { text: m }))) : null,
+      el(".metro-block", null, el("h3.metro-h", { text: "🚇 Nearest subway station" }), metroSummary, mapEl),
       p.description ? el("p.detail-desc", { text: p.description }) : null,
       el(".detail-facts", null,
         factRow("Source", p.site_name),
@@ -282,6 +357,27 @@ async function openDetail(p) {
   );
   $("#detail").classList.remove("hidden");
 
+  // Nearest station + map. Use what we already have; otherwise resolve on demand
+  // (geocodes the address the first time, then it's cached on the server).
+  (async () => {
+    try {
+      let m = metroShape(p);
+      if (!p.metro_checked) {
+        m = await api(`/api/properties/${p.id}/metro`);
+        Object.assign(p, {
+          metro_checked: m.checked, metro_station: m.station, metro_line: m.line,
+          metro_color: m.color, metro_distance_m: m.distance_m,
+          latitude: m.property.lat, longitude: m.property.lon,
+          metro_lat: m.metro.lat, metro_lon: m.metro.lon,
+        });
+      }
+      renderMetroMap(mapEl, metroSummary, m);
+    } catch (e) {
+      metroSummary.replaceChildren(el("span.muted", { text: "Couldn’t load station info: " + e.message }));
+      mapEl.style.display = "none";
+    }
+  })();
+
   try {
     const photos = await api(`/api/properties/${p.id}/photos`);
     if (photos.length) {
@@ -296,7 +392,10 @@ async function openDetail(p) {
     photoWrap.replaceChildren(el(".gallery-empty", { text: "Error loading photos: " + e.message }));
   }
 }
-function closeDetail() { $("#detail").classList.add("hidden"); }
+function closeDetail() {
+  if (detailMap) { detailMap.remove(); detailMap = undefined; }
+  $("#detail").classList.add("hidden");
+}
 $("#detailClose").addEventListener("click", closeDetail);
 $("#detail").addEventListener("click", (e) => { if (e.target.id === "detail") closeDetail(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDetail(); });
@@ -337,6 +436,7 @@ const SEL_FIELDS = [
   ["image", "Image"], ["price", "Price"], ["address", "Address"], ["neighborhood", "Neighborhood"],
   ["bedrooms", "Bedrooms"], ["bathrooms", "Bathrooms"], ["parking_spots", "Parking"], ["area_m2", "Area m²"],
   ["description", "Description"],
+  ["latitude", "Latitude (optional)"], ["longitude", "Longitude (optional)"],
   ["detail_photos", "Detail-page gallery selector (photos)"],
   ["detail_photo_attr", "Photo attr (default src)"],
   ["photo_prefix", "Photo URL prefix"],
@@ -473,8 +573,9 @@ async function loadSettings() {
     $("#s-interval").value = s.interval_minutes ?? 360;
     $("#s-delay").value = s.request_delay_seconds ?? 5;
     $("#s-dlphotos").checked = s.download_photos ?? true;
-    $("#s-maxphotos").value = s.max_photos_per_listing ?? 20;
+    $("#s-maxphotos").value = s.max_photos_per_listing ?? 0;
     $("#s-maxfetch").value = s.max_photo_fetches_per_run ?? 25;
+    $("#s-maxmetro").value = s.max_metro_lookups_per_run ?? 50;
   } catch (e) { toast(e.message, true); }
 }
 
@@ -483,8 +584,9 @@ $("#saveSettings").addEventListener("click", async () => {
     interval_minutes: parseInt($("#s-interval").value, 10) || 0,
     request_delay_seconds: parseInt($("#s-delay").value, 10) || 5,
     download_photos: $("#s-dlphotos").checked,
-    max_photos_per_listing: parseInt($("#s-maxphotos").value, 10) || 20,
+    max_photos_per_listing: parseInt($("#s-maxphotos").value, 10) || 0, // 0 = all
     max_photo_fetches_per_run: parseInt($("#s-maxfetch").value, 10) || 25,
+    max_metro_lookups_per_run: parseInt($("#s-maxmetro").value, 10) || 50,
     filters: {
       query: $("#s-query").value.trim(),
       neighborhood: $("#s-neigh").value.trim(),

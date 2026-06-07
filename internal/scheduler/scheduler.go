@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"ppsc/internal/geocode"
+	"ppsc/internal/metro"
 	"ppsc/internal/models"
 	"ppsc/internal/photos"
 	"ppsc/internal/scraper"
@@ -147,6 +149,8 @@ func (sc *Scheduler) RunAll(ctx context.Context) (int, error) {
 		sc.fetchPhotos(ctx, set, sites)
 	}
 
+	sc.resolveMetro(ctx, set)
+
 	sc.mu.Lock()
 	sc.lastMsg = formatMsg(ranSites, totalNew)
 	sc.mu.Unlock()
@@ -203,6 +207,108 @@ func (sc *Scheduler) fetchPhotos(ctx context.Context, set models.Settings, sites
 		}
 	}
 	slog.Info("photos: run complete", "listings", ok, "photos", total, "took", time.Since(start).Round(time.Millisecond))
+}
+
+// resolveMetro resolves the nearest subway station for a batch of listings that
+// don't have one yet (capped per run). Each unlocated listing is geocoded once
+// via Nominatim (results cached), then matched against the embedded station
+// network. Located listings (or confirmed failures) are marked so they aren't
+// retried every pass.
+func (sc *Scheduler) resolveMetro(ctx context.Context, set models.Settings) {
+	targets, err := sc.store.PropertiesNeedingMetro(ctx, set.MaxMetroLookupsPerRun)
+	if err != nil {
+		slog.Error("metro: query targets", "err", err)
+		return
+	}
+	if len(targets) == 0 {
+		return
+	}
+	if more, _ := sc.store.PropertiesNeedingMetro(ctx, set.MaxMetroLookupsPerRun+1); len(more) > len(targets) {
+		slog.Info("metro: capping this run", "limit", set.MaxMetroLookupsPerRun, "note", "remaining listings resolved on later runs")
+	}
+
+	start := time.Now()
+	var ok int
+	for _, t := range targets {
+		if err := sc.resolveOneMetro(ctx, t); err != nil {
+			slog.Warn("metro: resolve", "property", t.PropertyID, "err", err)
+		} else {
+			ok++
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	slog.Info("metro: run complete", "resolved", ok, "of", len(targets), "took", time.Since(start).Round(time.Millisecond))
+}
+
+// resolveOneMetro locates a single listing (using its coordinates, or by
+// geocoding its address) and stores its nearest station. A listing that cannot
+// be located is still marked checked (with an empty station) so it isn't
+// retried forever. A transient geocoding error is returned WITHOUT marking the
+// listing, so it is retried on the next run.
+func (sc *Scheduler) resolveOneMetro(ctx context.Context, t store.MetroTarget) error {
+	lat, lon := t.Latitude, t.Longitude
+	if lat == 0 || lon == 0 {
+		q := metroQuery(t.Address, t.Neighborhood)
+		if q == "" {
+			return sc.store.SaveMetro(ctx, t.PropertyID, 0, 0, "", "", "", 0, 0, 0)
+		}
+		if clat, clon, found, cached := sc.store.GetGeocode(ctx, q); cached {
+			if !found {
+				return sc.store.SaveMetro(ctx, t.PropertyID, 0, 0, "", "", "", 0, 0, 0)
+			}
+			lat, lon = clat, clon
+		} else {
+			res, err := geocode.Query(ctx, sc.fetcher, q)
+			if err != nil {
+				return err // transient: leave unchecked so it retries next run
+			}
+			_ = sc.store.PutGeocode(ctx, q, res.Lat, res.Lon, res.Found)
+			if !res.Found {
+				return sc.store.SaveMetro(ctx, t.PropertyID, 0, 0, "", "", "", 0, 0, 0)
+			}
+			lat, lon = res.Lat, res.Lon
+		}
+	}
+	st, dist, found := metro.Nearest(lat, lon)
+	if !found {
+		return sc.store.SaveMetro(ctx, t.PropertyID, lat, lon, "", "", "", 0, 0, 0)
+	}
+	return sc.store.SaveMetro(ctx, t.PropertyID, lat, lon, st.Name, st.Line, st.Color, dist, st.Lat, st.Lon)
+}
+
+// ResolveMetroByID resolves the nearest station for a single listing on demand
+// (used when the detail view is opened before the background batch has reached
+// it). It is a no-op if the listing was already resolved.
+func (sc *Scheduler) ResolveMetroByID(ctx context.Context, id int64) error {
+	t, ok, err := sc.store.MetroTargetByID(ctx, id)
+	if err != nil || !ok {
+		return err
+	}
+	return sc.resolveOneMetro(ctx, t)
+}
+
+// metroQuery builds a Nominatim search string from a listing's address and
+// neighborhood, scoped to São Paulo. Returns "" when there's nothing to go on.
+func metroQuery(address, neighborhood string) string {
+	// Addresses can carry scraped junk (extra whitespace / newlines); keep only
+	// the first line and collapse internal whitespace.
+	addr := strings.TrimSpace(strings.SplitN(address, "\n", 2)[0])
+	addr = strings.Join(strings.Fields(addr), " ")
+	neigh := strings.Join(strings.Fields(neighborhood), " ")
+	var parts []string
+	if addr != "" {
+		parts = append(parts, addr)
+	}
+	if neigh != "" && !strings.EqualFold(neigh, addr) {
+		parts = append(parts, neigh)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	parts = append(parts, "São Paulo", "SP", "Brasil")
+	return strings.Join(parts, ", ")
 }
 
 // detailGetter picks the fetcher for a listing's detail page. Browser-rendered

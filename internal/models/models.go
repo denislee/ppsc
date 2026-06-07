@@ -8,20 +8,20 @@ type Property struct {
 	ID int64 `json:"id"`
 	// Fingerprint is a stable hash used to deduplicate the same listing
 	// across repeated scrapes (and, where possible, across sites).
-	Fingerprint string    `json:"fingerprint"`
-	SiteID      int64     `json:"site_id"`
-	SiteName    string    `json:"site_name"`
-	Title       string    `json:"title"`
-	URL         string    `json:"url"`
-	ImageURL    string    `json:"image_url"`
-	Price       int64     `json:"price"` // in BRL, whole reais; 0 means unknown
-	Address     string    `json:"address"`
-	Neighborhood string   `json:"neighborhood"`
-	Bedrooms    int       `json:"bedrooms"`
-	Bathrooms   int       `json:"bathrooms"`
-	ParkingSpots int      `json:"parking_spots"`
-	AreaM2      int       `json:"area_m2"`
-	Description string    `json:"description"`
+	Fingerprint  string `json:"fingerprint"`
+	SiteID       int64  `json:"site_id"`
+	SiteName     string `json:"site_name"`
+	Title        string `json:"title"`
+	URL          string `json:"url"`
+	ImageURL     string `json:"image_url"`
+	Price        int64  `json:"price"` // in BRL, whole reais; 0 means unknown
+	Address      string `json:"address"`
+	Neighborhood string `json:"neighborhood"`
+	Bedrooms     int    `json:"bedrooms"`
+	Bathrooms    int    `json:"bathrooms"`
+	ParkingSpots int    `json:"parking_spots"`
+	AreaM2       int    `json:"area_m2"`
+	Description  string `json:"description"`
 	// Status lets the user triage listings from the UI.
 	Status string `json:"status"` // new | seen | hidden
 	// Favorite is an independent "liked" tag, separate from Status.
@@ -40,6 +40,25 @@ type Property struct {
 	// it is served locally from /photos and always loads — unlike the scraped
 	// ImageURL, which is often absent (lazy-loaded list pages) or hotlinked.
 	ThumbPath string `json:"thumb_path,omitempty"`
+
+	// Latitude/Longitude locate the property. They come either directly from a
+	// scrape (when the site exposes coordinates) or from geocoding the address.
+	// Zero means "unknown / not yet geocoded".
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+
+	// MetroChecked is set once the nearest-station lookup has run for this
+	// listing (so it is not retried every pass). The Metro* fields below hold
+	// its result: the closest São Paulo subway station, its line and map colour,
+	// the walking-line distance in metres, and the station's coordinates (for
+	// drawing the map). They are zero when no station was found or not yet run.
+	MetroChecked   bool    `json:"metro_checked"`
+	MetroStation   string  `json:"metro_station,omitempty"`
+	MetroLine      string  `json:"metro_line,omitempty"`
+	MetroColor     string  `json:"metro_color,omitempty"`
+	MetroDistanceM int     `json:"metro_distance_m"`
+	MetroLat       float64 `json:"metro_lat"`
+	MetroLon       float64 `json:"metro_lon"`
 }
 
 // Photo is a single downloaded image belonging to a Property.
@@ -85,6 +104,11 @@ type Selectors struct {
 	ParkingSpots string `json:"parking_spots"`
 	AreaM2       string `json:"area_m2"`
 	Description  string `json:"description"`
+	// Latitude/Longitude are optional selectors/paths for sites that expose
+	// coordinates directly (common in nextdata blobs). When present they skip
+	// the geocoding step for that listing.
+	Latitude  string `json:"latitude"`
+	Longitude string `json:"longitude"`
 
 	// AttrURL / AttrImage name the HTML attribute to read for CSS strategy
 	// (e.g. "href", "src", "data-src"). Defaults applied if empty.
@@ -103,9 +127,9 @@ type Selectors struct {
 
 // Site is a configurable scrape target. Users create and edit these from the UI.
 type Site struct {
-	ID      int64    `json:"id"`
-	Name    string   `json:"name"`
-	Enabled bool     `json:"enabled"`
+	ID      int64  `json:"id"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
 	// URLTemplate is the search URL with placeholders substituted at scrape
 	// time: {query} {minPrice} {maxPrice} {minBeds} {neighborhood} {page}.
 	URLTemplate string   `json:"url_template"`
@@ -122,10 +146,10 @@ type Site struct {
 	// Notes is free text shown in the UI (e.g. caveats about the site).
 	Notes string `json:"notes"`
 
-	LastRun     time.Time `json:"last_run"`
-	LastStatus  string    `json:"last_status"`  // ok | error | never
-	LastError   string    `json:"last_error"`
-	LastFound   int       `json:"last_found"`
+	LastRun    time.Time `json:"last_run"`
+	LastStatus string    `json:"last_status"` // ok | error | never
+	LastError  string    `json:"last_error"`
+	LastFound  int       `json:"last_found"`
 }
 
 // Filters are the global search criteria applied across every enabled site.
@@ -151,8 +175,15 @@ type Settings struct {
 	// downloading its photo gallery to local disk.
 	DownloadPhotos bool `json:"download_photos"`
 	// MaxPhotosPerListing caps how many images are downloaded per listing.
+	// Zero means no cap — download every photo found (the default).
 	MaxPhotosPerListing int `json:"max_photos_per_listing"`
 	// MaxPhotoFetchesPerRun caps how many detail pages are visited for photos
 	// in a single scrape pass (the rest are picked up on later runs).
 	MaxPhotoFetchesPerRun int `json:"max_photo_fetches_per_run"`
+
+	// MaxMetroLookupsPerRun caps how many listings have their nearest subway
+	// station resolved per scrape pass. Each unlocated listing costs one polite
+	// Nominatim geocoding request, so this keeps a fresh database from
+	// geocoding everything at once; the rest are picked up on later runs.
+	MaxMetroLookupsPerRun int `json:"max_metro_lookups_per_run"`
 }
