@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PPSC · Property Search</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🏠</text></svg>">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">🏠</span><div><b>PPSC</b><small>property purchase search engine</small></div></div>
+  <div class="stats" id="stats"></div>
+  <div class="actions">
+    <span class="sched" id="sched"></span>
+    <button id="scrapeBtn" class="btn primary">⟳ Scrape now</button>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="listings">Listings</button>
+  <button class="tab" data-tab="sites">Sites</button>
+  <button class="tab" data-tab="settings">Filters &amp; Schedule</button>
+</nav>
+
+<!-- LISTINGS -->
+<section class="view" id="view-listings">
+  <div class="toolbar">
+    <input id="f-q" placeholder="Search title / address…">
+    <input id="f-neigh" placeholder="Neighborhood" style="max-width:150px">
+    <input id="f-minprice" type="number" min="0" placeholder="Min R$" style="max-width:110px">
+    <input id="f-maxprice" type="number" min="0" placeholder="Max R$" style="max-width:110px">
+    <input id="f-minbeds" type="number" min="0" placeholder="Beds" style="max-width:80px">
+    <input id="f-minarea" type="number" min="0" placeholder="m²" style="max-width:80px">
+    <select id="f-status">
+      <option value="">Active (not hidden)</option>
+      <option value="new">New</option>
+      <option value="seen">Seen</option>
+      <option value="all">All</option>
+      <option value="hidden">Hidden</option>
+    </select>
+    <select id="f-sort">
+      <option value="newest">Newest</option>
+      <option value="price_asc">Price ↑</option>
+      <option value="price_desc">Price ↓</option>
+    </select>
+    <button id="f-fav" class="btn small" aria-pressed="false">♡ Favorites</button>
+    <button id="f-clear" class="btn small">Clear</button>
+    <span class="muted" id="count"></span>
+  </div>
+  <div id="grid" class="grid"></div>
+</section>
+
+<!-- SITES -->
+<section class="view hidden" id="view-sites">
+  <div class="split">
+    <div class="list-pane">
+      <div class="pane-head"><b>Sites</b><button id="newSiteBtn" class="btn small">+ New site</button></div>
+      <div id="siteList"></div>
+    </div>
+    <div class="edit-pane" id="sitePane">
+      <p class="muted center">Select a site to edit, or create a new one.</p>
+    </div>
+  </div>
+</section>
+
+<!-- SETTINGS -->
+<section class="view hidden" id="view-settings">
+  <div class="card form-card">
+    <h2>Global filters</h2>
+    <p class="muted">Applied to every enabled site (fed into URL templates and used to post-filter results).</p>
+    <div class="grid2">
+      <label>Query / keywords<input id="s-query" placeholder="e.g. apartamento"></label>
+      <label>Neighborhood<input id="s-neigh" placeholder="e.g. Pinheiros"></label>
+      <label>Min price (R$)<input id="s-minprice" type="number" min="0"></label>
+      <label>Max price (R$)<input id="s-maxprice" type="number" min="0"></label>
+      <label>Min bedrooms<input id="s-minbeds" type="number" min="0"></label>
+      <label>Min area (m²)<input id="s-minarea" type="number" min="0"></label>
+    </div>
+    <h2>Schedule</h2>
+    <label class="inline">Scrape every
+      <input id="s-interval" type="number" min="0" style="width:90px"> minutes
+      <span class="muted">(0 = disabled, run manually)</span>
+    </label>
+    <h2>Politeness</h2>
+    <p class="muted">Minimum delay between requests to the same site (plus random jitter). Higher = gentler on the sites and less likely to be rate-limited or blocked. The scraper also backs off automatically on HTTP 429/503.</p>
+    <label class="inline">Wait at least
+      <input id="s-delay" type="number" min="1" style="width:90px"> seconds between requests
+    </label>
+    <h2>Photos</h2>
+    <p class="muted">When enabled, each new listing's detail page is fetched once and its photo gallery is downloaded to local disk (served at <code>/photos</code>). Capped per run so a fresh database doesn't fetch everything at once — the rest are picked up on later scrapes.</p>
+    <label class="inline"><input id="s-dlphotos" type="checkbox"> Download listing photos to disk</label>
+    <div class="grid2">
+      <label>Max photos per listing<input id="s-maxphotos" type="number" min="1"></label>
+      <label>Max detail pages per run<input id="s-maxfetch" type="number" min="1"></label>
+    </div>
+    <div class="row-end"><button id="saveSettings" class="btn primary">Save settings</button></div>
+  </div>
+</section>
+
+<div id="detail" class="detail hidden">
+  <button class="gallery-close" id="detailClose">✕</button>
+  <div class="detail-inner" id="detailInner"></div>
+</div>
+<div id="toast" class="toast hidden"></div>
+<script src="app.js"></script>
+</body>
+</html>
