@@ -72,6 +72,39 @@ func Query(ctx context.Context, g Getter, query string) (Result, error) {
 	return Result{Lat: lat, Lon: lon, City: city, Found: true}, nil
 }
 
+// Reverse resolves a municipality from coordinates via Nominatim's reverse
+// endpoint. Used for listings that already arrive with coordinates (so they
+// never go through forward geocoding) — without this they'd never get a city.
+// Returns "" (no error) when the lookup succeeds but yields no municipality.
+func Reverse(ctx context.Context, g Getter, lat, lon float64) (string, error) {
+	u := "https://nominatim.openstreetmap.org/reverse?" + url.Values{
+		"lat":            {strconv.FormatFloat(lat, 'f', -1, 64)},
+		"lon":            {strconv.FormatFloat(lon, 'f', -1, 64)},
+		"format":         {"jsonv2"},
+		"addressdetails": {"1"},
+	}.Encode()
+
+	body, err := g.Get(ctx, u)
+	if err != nil {
+		return "", fmt.Errorf("reverse geocode %f,%f: %w", lat, lon, err)
+	}
+	// Reverse returns a single object (not an array like /search).
+	var hit struct {
+		Address struct {
+			City         string `json:"city"`
+			Town         string `json:"town"`
+			Municipality string `json:"municipality"`
+			Village      string `json:"village"`
+			County       string `json:"county"`
+		} `json:"address"`
+	}
+	if err := json.Unmarshal([]byte(body), &hit); err != nil {
+		return "", fmt.Errorf("reverse geocode %f,%f: decode: %w", lat, lon, err)
+	}
+	a := hit.Address
+	return firstNonEmpty(a.City, a.Town, a.Municipality, a.Village, a.County), nil
+}
+
 func firstNonEmpty(vs ...string) string {
 	for _, v := range vs {
 		if v != "" {

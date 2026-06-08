@@ -292,7 +292,7 @@ func parseCSS(body string, site models.Site) ([]models.Property, error) {
 		p.ImageURL = cssAttr(s, sel.Image, attrImg)
 		p.Price = parseBRL(cssText(s, sel.Price))
 		p.Address = cssText(s, sel.Address)
-		p.Neighborhood = cssText(s, sel.Neighborhood)
+		p.Neighborhood = CleanNeighborhood(cssText(s, sel.Neighborhood))
 		p.Bedrooms = parseInt(cssText(s, sel.Bedrooms))
 		p.Bathrooms = parseInt(cssText(s, sel.Bathrooms))
 		p.ParkingSpots = parseInt(cssText(s, sel.ParkingSpots))
@@ -509,7 +509,7 @@ func parseNextData(body string, site models.Site) ([]models.Property, error) {
 			ImageURL:     jsonStr(it, sel.Image),
 			Price:        parseBRL(jsonStr(it, sel.Price)),
 			Address:      jsonStr(it, sel.Address),
-			Neighborhood: jsonStr(it, sel.Neighborhood),
+			Neighborhood: CleanNeighborhood(jsonStr(it, sel.Neighborhood)),
 			Bedrooms:     parseInt(jsonStr(it, sel.Bedrooms)),
 			Bathrooms:    parseInt(jsonStr(it, sel.Bathrooms)),
 			ParkingSpots: parseInt(jsonStr(it, sel.ParkingSpots)),
@@ -573,6 +573,55 @@ func jsonStr(v any, path string) string {
 }
 
 // ---- shared helpers ----
+
+// listingProseWords are tokens that appear in a listing's descriptive heading
+// ("Sobrado para comprar com 130 m², 2 quartos … 3 vagas em …") but never in a
+// bare neighborhood name. Their presence means a selector captured prose where a
+// neighborhood was expected — as ZAP and VivaReal cards do, putting the heading
+// in the element our neighborhood selector targets.
+var listingProseWords = []string{
+	"para comprar", "para alugar", "para vender",
+	"quarto", "banheiro", "vaga", "suíte", "suite",
+	"dormitório", "dormitorio", "m²", " m2",
+}
+
+// looksLikeListingProse reports whether s is a listing-description blob rather
+// than a neighborhood name.
+func looksLikeListingProse(s string) bool {
+	low := strings.ToLower(s)
+	for _, w := range listingProseWords {
+		if strings.Contains(low, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// emSplitRe splits on the Portuguese " em " ("in") that precedes the location in
+// a listing heading, e.g. "… 3 vagas em Vila Medeiros, São Paulo".
+var emSplitRe = regexp.MustCompile(`(?i)\s+em\s+`)
+
+// CleanNeighborhood normalises a scraped neighborhood. A clean value passes
+// through (whitespace-collapsed) unchanged. A descriptive heading captured by a
+// mis-targeted selector is reduced to the bairro mined from its trailing
+// "… em <Bairro>, <City>", or "" when no bairro can be recovered — an empty
+// neighborhood is better than prose polluting the filter dropdown and geocoding
+// queries (the latter being why such listings failed to locate on the map).
+func CleanNeighborhood(raw string) string {
+	n := strings.Join(strings.Fields(raw), " ")
+	if n == "" || !looksLikeListingProse(n) {
+		return n
+	}
+	segs := emSplitRe.Split(n, -1)
+	tail := strings.TrimSpace(segs[len(segs)-1])
+	if i := strings.LastIndex(tail, ","); i >= 0 {
+		tail = strings.TrimSpace(tail[:i]) // drop the trailing ", <City>"
+	}
+	if tail != "" && !looksLikeListingProse(tail) {
+		return tail
+	}
+	return ""
+}
 
 func orDefault(v, def string) string {
 	if strings.TrimSpace(v) == "" {

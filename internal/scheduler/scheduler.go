@@ -4,10 +4,14 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"ppsc/internal/geocode"
 	"ppsc/internal/metro"
@@ -184,29 +188,70 @@ func (sc *Scheduler) fetchPhotos(ctx context.Context, set models.Settings, sites
 	start := time.Now()
 	var ok, total int
 	for _, t := range targets {
-		site := byID[t.SiteID]
-		getter := sc.detailGetter(site)
-		html, err := getter.Get(ctx, t.URL)
+		n, err := sc.fetchOnePhotos(ctx, set, byID[t.SiteID], t)
 		if err != nil {
 			slog.Warn("photos: fetch detail page", "property", t.PropertyID, "url", t.URL, "err", err)
-			// Mark fetched (with zero photos) so we don't retry a dead URL forever.
-			_ = sc.store.SavePhotos(ctx, t.PropertyID, nil)
 			continue
 		}
-		urls := scraper.ExtractDetailPhotos(html, site.Selectors)
-		pics, _ := sc.photos.Download(ctx, t.PropertyID, urls, set.MaxPhotosPerListing, t.URL)
-		if err := sc.store.SavePhotos(ctx, t.PropertyID, pics); err != nil {
-			slog.Error("photos: save", "property", t.PropertyID, "err", err)
-			continue
-		}
-		slog.Debug("photos: downloaded", "property", t.PropertyID, "found", len(urls), "saved", len(pics))
-		total += len(pics)
+		slog.Debug("photos: downloaded", "property", t.PropertyID, "saved", n)
+		total += n
 		ok++
 		if ctx.Err() != nil {
 			break
 		}
 	}
 	slog.Info("photos: run complete", "listings", ok, "photos", total, "took", time.Since(start).Round(time.Millisecond))
+}
+
+// fetchOnePhotos visits a single listing's detail page, extracts its gallery,
+// downloads the images, and saves them, returning the number of photos saved. A
+// fetch failure still marks the listing fetched (with zero photos) so a dead URL
+// isn't retried forever; the error is returned for the caller to log.
+func (sc *Scheduler) fetchOnePhotos(ctx context.Context, set models.Settings, site models.Site, t store.PhotoTarget) (int, error) {
+	getter := sc.detailGetter(site)
+	html, err := getter.Get(ctx, t.URL)
+	if err != nil {
+		_ = sc.store.SavePhotos(ctx, t.PropertyID, nil)
+		return 0, err
+	}
+	urls := scraper.ExtractDetailPhotos(html, site.Selectors)
+	pics, _ := sc.photos.Download(ctx, t.PropertyID, urls, set.MaxPhotosPerListing, t.URL)
+	if err := sc.store.SavePhotos(ctx, t.PropertyID, pics); err != nil {
+		return 0, err
+	}
+	return len(pics), nil
+}
+
+// FetchPhotosByID fetches a single listing's photos on demand (used when the
+// detail view is opened before the background batch has reached it). It is a
+// no-op if the listing's photos were already fetched or photo downloading is
+// disabled.
+func (sc *Scheduler) FetchPhotosByID(ctx context.Context, id int64) error {
+	if sc.photos == nil {
+		return nil
+	}
+	t, ok, err := sc.store.PhotoTargetByID(ctx, id)
+	if err != nil || !ok {
+		return err
+	}
+	site, err := sc.store.GetSite(ctx, t.SiteID)
+	if err != nil {
+		return err
+	}
+	set, err := sc.store.GetSettings(ctx)
+	if err != nil {
+		return err
+	}
+	if !set.DownloadPhotos {
+		return nil
+	}
+	// The periodic loop applies the politeness delay per run; an on-demand fetch
+	// can land between runs, so apply it here too.
+	delay := time.Duration(set.RequestDelaySeconds) * time.Second
+	sc.fetcher.SetMinInterval(delay)
+	sc.browser.SetMinInterval(delay)
+	_, err = sc.fetchOnePhotos(ctx, set, site, t)
+	return err
 }
 
 // resolveMetro resolves the nearest subway station for a batch of listings that
@@ -250,7 +295,7 @@ func (sc *Scheduler) resolveMetro(ctx context.Context, set models.Settings) {
 func (sc *Scheduler) resolveOneMetro(ctx context.Context, t store.MetroTarget) error {
 	lat, lon, city := t.Latitude, t.Longitude, ""
 	if lat == 0 || lon == 0 {
-		q := metroQuery(t.Address, t.Neighborhood)
+		q := metroQuery(t.Address, t.Neighborhood, t.Title, t.Description)
 		if q == "" {
 			return sc.store.SaveMetro(ctx, t.PropertyID, 0, 0, "", "", "", "", 0, 0, 0)
 		}
@@ -271,6 +316,20 @@ func (sc *Scheduler) resolveOneMetro(ctx context.Context, t store.MetroTarget) e
 			lat, lon, city = res.Lat, res.Lon, res.City
 		}
 	}
+	// Fall back to reverse geocoding when we have coordinates but no city yet.
+	// This covers listings that arrive pre-geocoded (which skip the forward
+	// lookup above) and forward hits served from cache entries that predate the
+	// city column. Cached by a synthetic "reverse:lat,lon" key to stay polite.
+	if city == "" && lat != 0 && lon != 0 {
+		rq := fmt.Sprintf("reverse:%.5f,%.5f", lat, lon)
+		if _, _, ccity, _, cached := sc.store.GetGeocode(ctx, rq); cached {
+			city = ccity
+		} else if rcity, err := geocode.Reverse(ctx, sc.fetcher, lat, lon); err == nil {
+			city = rcity
+			_ = sc.store.PutGeocode(ctx, rq, lat, lon, rcity, true)
+		}
+		// A transient reverse-geocode error just leaves city empty for this run.
+	}
 	st, dist, found := metro.Nearest(lat, lon)
 	if !found {
 		return sc.store.SaveMetro(ctx, t.PropertyID, lat, lon, city, "", "", "", 0, 0, 0)
@@ -289,14 +348,72 @@ func (sc *Scheduler) ResolveMetroByID(ctx context.Context, id int64) error {
 	return sc.resolveOneMetro(ctx, t)
 }
 
+// ResolvePendingMetro resolves every listing awaiting a nearest-station lookup,
+// in capped batches, until none remain. Unlike the per-run resolveMetro pass it
+// drains the whole backlog — used after ResetUnlocatedMetro re-queues listings
+// for the improved street-from-title/description geocoding. It stops early if a
+// full batch makes no progress (e.g. the geocoder is unavailable) so it never
+// spins. Returns the number of listings resolved.
+func (sc *Scheduler) ResolvePendingMetro(ctx context.Context) (int, error) {
+	set, err := sc.store.GetSettings(ctx)
+	if err != nil {
+		return 0, err
+	}
+	// The periodic loop applies the politeness delay per run; this can run
+	// outside one, so apply it here too.
+	delay := time.Duration(set.RequestDelaySeconds) * time.Second
+	sc.fetcher.SetMinInterval(delay)
+	sc.browser.SetMinInterval(delay)
+
+	var done int
+	for {
+		targets, err := sc.store.PropertiesNeedingMetro(ctx, set.MaxMetroLookupsPerRun)
+		if err != nil {
+			return done, err
+		}
+		if len(targets) == 0 {
+			return done, nil
+		}
+		var resolved int
+		for _, t := range targets {
+			if err := sc.resolveOneMetro(ctx, t); err != nil {
+				slog.Warn("metro: re-resolve", "property", t.PropertyID, "err", err)
+			} else {
+				resolved++
+			}
+			if ctx.Err() != nil {
+				return done + resolved, ctx.Err()
+			}
+		}
+		done += resolved
+		if resolved == 0 {
+			// Whole batch hit transient errors — stop rather than loop forever;
+			// the periodic pass will retry these later.
+			return done, nil
+		}
+	}
+}
+
 // metroQuery builds a Nominatim search string from a listing's address and
 // neighborhood, scoped to São Paulo. Returns "" when there's nothing to go on.
-func metroQuery(address, neighborhood string) string {
+// When the address carries no street, it tries to recover one from the title and
+// then the description (many sites only put "... na Rua Augusta, 123" there),
+// since a precise street geocodes far better than a neighborhood centroid.
+func metroQuery(address, neighborhood, title, description string) string {
 	// Addresses can carry scraped junk (extra whitespace / newlines); keep only
 	// the first line and collapse internal whitespace.
 	addr := strings.TrimSpace(strings.SplitN(address, "\n", 2)[0])
 	addr = strings.Join(strings.Fields(addr), " ")
-	neigh := strings.Join(strings.Fields(neighborhood), " ")
+	// Some portals (ZAP, VivaReal) put a descriptive heading where a neighborhood
+	// belongs; clean it to the bairro (or "") so it doesn't poison the query.
+	neigh := scraper.CleanNeighborhood(neighborhood)
+	if !hasStreet(addr) {
+		if street := extractStreet(title); street != "" {
+			addr = street
+		} else if street := extractStreet(description); street != "" {
+			addr = street
+		}
+	}
 	var parts []string
 	if addr != "" {
 		parts = append(parts, addr)
@@ -309,6 +426,96 @@ func metroQuery(address, neighborhood string) string {
 	}
 	parts = append(parts, "São Paulo", "SP", "Brasil")
 	return strings.Join(parts, ", ")
+}
+
+// streetRe matches a Brazilian street-address fragment ("logradouro") in free
+// text: a street-type word (Rua, Avenida, Alameda, …, with common abbreviations)
+// followed by its name, and an optional house number after a comma. Group 1 is
+// the type, group 2 the raw name (trimmed later), group 3 the number.
+var streetRe = regexp.MustCompile(`(?i)\b(rua|r\.|avenida|av\.?|alameda|al\.|travessa|tv\.|pra[çc]a|estrada|rodovia|rod\.?|largo|viela)\.?\s+([^\n,.;:()]{2,60})(?:,\s*(\d{1,6}))?`)
+
+// streetConnectors are the lowercase Portuguese particles that legitimately sit
+// between the words of a street name (e.g. "Avenida Nove de Julho") and so don't
+// end it.
+var streetConnectors = map[string]bool{
+	"de": true, "do": true, "da": true, "dos": true, "das": true, "e": true,
+}
+
+// hasStreet reports whether s already contains a street fragment, so we don't
+// override a usable address with one mined from free text.
+func hasStreet(s string) bool { return streetRe.MatchString(s) }
+
+// extractStreet pulls a geocodable street fragment ("Rua Augusta, 123") out of
+// free text such as a listing title. It returns "" when no street is found.
+// Conservative by design: the captured name is trimmed to its leading
+// proper-noun words (plus connectors like "de"/"do"), so a title like "Rua
+// tranquila, próxima ao metrô" yields nothing rather than a wrong location.
+func extractStreet(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	m := streetRe.FindStringSubmatch(text)
+	if m == nil {
+		return ""
+	}
+	name := trimStreetName(m[2])
+	if utf8.RuneCountInString(name) < 3 {
+		return ""
+	}
+	street := normalizeStreetType(m[1]) + " " + name
+	if m[3] != "" {
+		street += ", " + m[3]
+	}
+	return street
+}
+
+// trimStreetName keeps the leading words of a captured name while they look like
+// part of a proper noun — capitalised, numeric, or a connector — and stops at
+// the first ordinary lowercase word (prose like "próximo"). Trailing connectors
+// are dropped ("Rua Augusta e" → "Rua Augusta").
+func trimStreetName(raw string) string {
+	var kept []string
+	for _, w := range strings.Fields(raw) {
+		r := []rune(w)
+		if len(r) == 0 {
+			continue
+		}
+		lw := strings.ToLower(strings.Trim(w, ".,"))
+		if streetConnectors[lw] || unicode.IsUpper(r[0]) || unicode.IsDigit(r[0]) {
+			kept = append(kept, w)
+			continue
+		}
+		break // first ordinary lowercase word ends the street name
+	}
+	for len(kept) > 0 && streetConnectors[strings.ToLower(kept[len(kept)-1])] {
+		kept = kept[:len(kept)-1]
+	}
+	return strings.Join(kept, " ")
+}
+
+// normalizeStreetType expands a matched street-type token (possibly abbreviated)
+// to its canonical full form for a cleaner geocoding query.
+func normalizeStreetType(t string) string {
+	switch strings.ToLower(strings.TrimSuffix(t, ".")) {
+	case "r", "rua":
+		return "Rua"
+	case "av", "avenida":
+		return "Avenida"
+	case "al", "alameda":
+		return "Alameda"
+	case "tv", "travessa":
+		return "Travessa"
+	case "rod", "rodovia":
+		return "Rodovia"
+	case "praça", "praca":
+		return "Praça"
+	case "estrada":
+		return "Estrada"
+	case "largo":
+		return "Largo"
+	case "viela":
+		return "Viela"
+	default:
+		return t
+	}
 }
 
 // detailGetter picks the fetcher for a listing's detail page. Browser-rendered

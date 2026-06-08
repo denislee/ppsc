@@ -436,6 +436,22 @@ func (s *Store) PropertiesNeedingPhotos(ctx context.Context, limit int) ([]Photo
 	return out, rows.Err()
 }
 
+// PhotoTargetByID returns the fetch data for a single listing. ok is false when
+// the listing doesn't exist, has no URL, or has already had its photos fetched.
+func (s *Store) PhotoTargetByID(ctx context.Context, id int64) (PhotoTarget, bool, error) {
+	var t PhotoTarget
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id,url,site_id FROM properties WHERE id=? AND photos_fetched=0 AND url<>''`, id).
+		Scan(&t.PropertyID, &t.URL, &t.SiteID)
+	if err == sql.ErrNoRows {
+		return PhotoTarget{}, false, nil
+	}
+	if err != nil {
+		return PhotoTarget{}, false, err
+	}
+	return t, true, nil
+}
+
 // SavePhotos records downloaded photos for a property, marks it fetched, and
 // updates its photo_count. Replaces any existing rows for the property.
 func (s *Store) SavePhotos(ctx context.Context, propertyID int64, photos []models.Photo) error {
@@ -492,6 +508,10 @@ type MetroTarget struct {
 	Longitude    float64
 	Address      string
 	Neighborhood string
+	// Title and Description are mined for a street name ("Rua …", "Avenida …")
+	// when Address carries none, so the listing can still be located precisely.
+	Title       string
+	Description string
 }
 
 // PropertiesNeedingMetro returns up to limit not-hidden listings whose nearest
@@ -501,9 +521,9 @@ func (s *Store) PropertiesNeedingMetro(ctx context.Context, limit int) ([]MetroT
 	if limit <= 0 {
 		limit = 25
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,latitude,longitude,address,neighborhood FROM properties
+	rows, err := s.db.QueryContext(ctx, `SELECT id,latitude,longitude,address,neighborhood,title,description FROM properties
 		WHERE metro_checked=0 AND status<>'hidden'
-		  AND ((latitude<>0 AND longitude<>0) OR address<>'' OR neighborhood<>'')
+		  AND ((latitude<>0 AND longitude<>0) OR address<>'' OR neighborhood<>'' OR title<>'')
 		ORDER BY first_seen DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -512,7 +532,7 @@ func (s *Store) PropertiesNeedingMetro(ctx context.Context, limit int) ([]MetroT
 	var out []MetroTarget
 	for rows.Next() {
 		var t MetroTarget
-		if err := rows.Scan(&t.PropertyID, &t.Latitude, &t.Longitude, &t.Address, &t.Neighborhood); err != nil {
+		if err := rows.Scan(&t.PropertyID, &t.Latitude, &t.Longitude, &t.Address, &t.Neighborhood, &t.Title, &t.Description); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -525,8 +545,8 @@ func (s *Store) PropertiesNeedingMetro(ctx context.Context, limit int) ([]MetroT
 func (s *Store) MetroTargetByID(ctx context.Context, id int64) (MetroTarget, bool, error) {
 	var t MetroTarget
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id,latitude,longitude,address,neighborhood FROM properties WHERE id=? AND metro_checked=0`, id).
-		Scan(&t.PropertyID, &t.Latitude, &t.Longitude, &t.Address, &t.Neighborhood)
+		`SELECT id,latitude,longitude,address,neighborhood,title,description FROM properties WHERE id=? AND metro_checked=0`, id).
+		Scan(&t.PropertyID, &t.Latitude, &t.Longitude, &t.Address, &t.Neighborhood, &t.Title, &t.Description)
 	if err == sql.ErrNoRows {
 		return MetroTarget{}, false, nil
 	}
@@ -547,6 +567,61 @@ func (s *Store) SaveMetro(ctx context.Context, id int64, lat, lon float64, city,
 		WHERE id=?`,
 		lat, lon, city, station, line, color, distanceM, stationLat, stationLon, id)
 	return err
+}
+
+// ResetUnlocatedMetro clears the checked flag on non-hidden listings that were
+// checked but never located — no coordinates and no station found — so the
+// nearest-station lookup runs again. This lets the improved
+// street-from-title/description geocoding pick up listings that previously had
+// nothing to locate them by. Listings that already resolved (have coordinates or
+// a station) are left untouched. Returns the number of listings reset.
+func (s *Store) ResetUnlocatedMetro(ctx context.Context) (int, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE properties SET metro_checked=0
+		WHERE metro_checked=1 AND status<>'hidden'
+		  AND latitude=0 AND longitude=0 AND metro_station=''`)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// CleanStoredNeighborhoods rewrites already-stored neighborhood values using
+// clean, which recovers the bairro from descriptive headings that a mis-targeted
+// selector captured (see scraper.CleanNeighborhood). Rows whose value is already
+// clean are skipped. Returns the number of rows updated. Repairs listings
+// scraped before neighborhoods were sanitised at scrape time.
+func (s *Store) CleanStoredNeighborhoods(ctx context.Context, clean func(string) string) (int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,neighborhood FROM properties WHERE neighborhood<>''`)
+	if err != nil {
+		return 0, err
+	}
+	type update struct {
+		id    int64
+		value string
+	}
+	var updates []update
+	for rows.Next() {
+		var id int64
+		var nb string
+		if err := rows.Scan(&id, &nb); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if c := clean(nb); c != nb {
+			updates = append(updates, update{id, c})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, u := range updates {
+		if _, err := s.db.ExecContext(ctx, `UPDATE properties SET neighborhood=? WHERE id=?`, u.value, u.id); err != nil {
+			return len(updates), err
+		}
+	}
+	return len(updates), nil
 }
 
 // GetGeocode returns a cached geocoding result for query. ok is false when the
@@ -585,6 +660,27 @@ func (s *Store) ListCities(ctx context.Context) ([]string, error) {
 			return nil, err
 		}
 		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ListNeighborhoods returns the distinct non-empty neighborhoods seen across
+// non-hidden listings, alphabetically — used to populate the neighborhood
+// filter dropdown.
+func (s *Store) ListNeighborhoods(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT neighborhood FROM properties WHERE neighborhood<>'' AND status<>'hidden' ORDER BY neighborhood`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
 	}
 	return out, rows.Err()
 }

@@ -212,3 +212,22 @@ func TestParseBRL(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanNeighborhood(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"clean passes through", "Vila Medeiros", "Vila Medeiros"},
+		{"clean collapses whitespace", "  Bosque  da   Saúde ", "Bosque da Saúde"},
+		{"empty stays empty", "", ""},
+		{"ZAP heading -> bairro", "Sobrado para comprar com 130 m², 2 quartos, 2 banheiros, 3 vagas em Vila Medeiros, São Paulo", "Vila Medeiros"},
+		{"apartment heading -> bairro", "Apartamento para comprar com 2 quartos em Higienópolis, São Paulo", "Higienópolis"},
+		{"bairro with own comma kept", "Cobertura para alugar com 3 suítes em Jardim São Paulo, São Paulo", "Jardim São Paulo"},
+		{"prose with no recoverable bairro -> empty", "Casa para comprar com 3 quartos e 2 vagas", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := CleanNeighborhood(c.in); got != c.want {
+				t.Errorf("CleanNeighborhood(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}

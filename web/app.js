@@ -64,7 +64,7 @@ $$(".tab").forEach((tab) =>
     $$(".view").forEach((v) => v.classList.toggle("hidden", v.id !== "view-" + name));
     if (name === "sites") loadSites();
     if (name === "settings") loadSettings();
-    if (name === "listings") { loadListings(); loadCities(); }
+    if (name === "listings") { loadListings(); loadCities(); loadNeighborhoods(); }
   })
 );
 
@@ -95,11 +95,25 @@ $("#scrapeBtn").addEventListener("click", async () => {
   } catch (e) { toast(e.message, true); $("#scrapeBtn").disabled = false; }
 });
 
+$("#reresolveMetroBtn").addEventListener("click", async () => {
+  const btn = $("#reresolveMetroBtn");
+  btn.disabled = true;
+  try {
+    const r = await api("/api/metro/reresolve", { method: "POST" });
+    const parts = [];
+    if (r.cleaned) parts.push(`cleaned ${r.cleaned} neighborhood(s)`);
+    if (r.reset) parts.push(`re-resolving ${r.reset} unlocated listing(s) in the background`);
+    toast(parts.length ? `${parts.join("; ")} — refresh in a bit.` : "Nothing to repair.");
+    if (r.cleaned) loadNeighborhoods();
+  } catch (e) { toast(e.message, true); }
+  finally { btn.disabled = false; }
+});
+
 function pollDuringScrape() {
   let n = 0;
   const iv = setInterval(async () => {
     const running = await refreshStatus();
-    if (!running || ++n > 200) { clearInterval(iv); loadListings(); loadCities(); }
+    if (!running || ++n > 200) { clearInterval(iv); loadListings(); loadCities(); loadNeighborhoods(); }
   }, 2000);
 }
 
@@ -160,6 +174,19 @@ async function loadCities() {
       ...cities.map((c) => el("option", { value: c, text: c, selected: c === current }))
     );
     sel.value = current; // keep selection even if it's no longer in the list
+  } catch (e) { /* non-fatal */ }
+}
+
+// loadNeighborhoods (re)populates the neighborhood filter's datalist with the
+// distinct neighborhoods the server has seen so far, giving the free-text input
+// type-to-filter suggestions. Like cities, neighborhoods accrue as listings are
+// scraped, so this is refreshed on boot, on entering Listings, and post-scrape.
+async function loadNeighborhoods() {
+  try {
+    const neighborhoods = await api("/api/neighborhoods");
+    $("#f-neigh-list").replaceChildren(
+      ...neighborhoods.map((n) => el("option", { value: n }))
+    );
   } catch (e) { /* non-fatal */ }
 }
 
@@ -681,5 +708,6 @@ $("#saveSettings").addEventListener("click", async () => {
 /* ---------- boot ---------- */
 loadListings();
 loadCities();
+loadNeighborhoods();
 refreshStatus();
 setInterval(refreshStatus, 8000);

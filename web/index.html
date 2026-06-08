@@ -32,7 +32,8 @@
   <div class="toolbar">
     <input id="f-q" placeholder="Search title / address…">
     <select id="f-city" style="max-width:160px"><option value="">All cities</option></select>
-    <input id="f-neigh" placeholder="Neighborhood" style="max-width:150px">
+    <input id="f-neigh" placeholder="Neighborhood" list="f-neigh-list" style="max-width:150px">
+    <datalist id="f-neigh-list"></datalist>
     <input id="f-minprice" type="number" min="0" placeholder="Min R$" style="max-width:110px">
     <input id="f-maxprice" type="number" min="0" placeholder="Max R$" style="max-width:110px">
     <input id="f-minbeds" type="number" min="0" placeholder="Beds" style="max-width:80px">
@@ -104,6 +105,8 @@
     <label class="inline">Resolve at most
       <input id="s-maxmetro" type="number" min="1" style="width:90px"> listings per run
     </label>
+    <p class="muted">Listings already checked keep their result. Use this to repair older listings: it cleans up neighborhoods that were scraped as descriptive text and re-runs the lookup for listings that were never located — picking up improvements like reading the street name from a listing's title or description.</p>
+    <div class="row-end"><button id="reresolveMetroBtn" class="btn">↻ Repair older listings</button></div>
     <div class="row-end"><button id="saveSettings" class="btn primary">Save settings</button></div>
   </div>
 </section>

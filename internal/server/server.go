@@ -36,10 +36,12 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/properties", s.handleListProperties)
 	mux.HandleFunc("GET /api/cities", s.handleListCities)
+	mux.HandleFunc("GET /api/neighborhoods", s.handleListNeighborhoods)
 	mux.HandleFunc("POST /api/properties/{id}/status", s.handleSetStatus)
 	mux.HandleFunc("POST /api/properties/{id}/favorite", s.handleSetFavorite)
 	mux.HandleFunc("GET /api/properties/{id}/photos", s.handlePropertyPhotos)
 	mux.HandleFunc("GET /api/properties/{id}/metro", s.handlePropertyMetro)
+	mux.HandleFunc("POST /api/metro/reresolve", s.handleReResolveMetro)
 
 	// Serve downloaded photos from disk at /photos/<id>/NN.jpg.
 	mux.Handle("GET /photos/", http.StripPrefix("/photos/", http.FileServer(http.Dir(s.photoDir))))
@@ -143,6 +145,22 @@ func (s *Server) handleListCities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, cities)
 }
 
+// handleListNeighborhoods returns the distinct neighborhoods seen across
+// listings, for the neighborhood filter dropdown.
+func (s *Server) handleListNeighborhoods(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := ctxOf(r)
+	defer cancel()
+	neighborhoods, err := s.store.ListNeighborhoods(ctx)
+	if err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	if neighborhoods == nil {
+		neighborhoods = []string{}
+	}
+	writeJSON(w, 200, neighborhoods)
+}
+
 func (s *Server) handleSetStatus(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := ctxOf(r)
 	defer cancel()
@@ -184,10 +202,19 @@ func (s *Server) handleSetFavorite(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 
+// handlePropertyPhotos returns a listing's photos. If they haven't been fetched
+// yet (the background batch hasn't reached this listing), it scrapes the detail
+// page on demand first. Fetching hits the live site through the throttled
+// getter — and may spin up a headless browser — so allow a generous timeout.
 func (s *Server) handlePropertyPhotos(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := ctxOf(r)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	pics, err := s.store.GetPhotos(ctx, atoi64(r.PathValue("id")))
+	id := atoi64(r.PathValue("id"))
+	if err := s.sched.FetchPhotosByID(ctx, id); err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	pics, err := s.store.GetPhotos(ctx, id)
 	if err != nil {
 		httpErr(w, 500, err.Error())
 		return
@@ -229,6 +256,38 @@ func (s *Server) handlePropertyMetro(w http.ResponseWriter, r *http.Request) {
 		"property":   map[string]float64{"lat": p.Latitude, "lon": p.Longitude},
 		"metro":      map[string]float64{"lat": p.MetroLat, "lon": p.MetroLon},
 	})
+}
+
+// handleReResolveMetro repairs listings scraped before recent improvements: it
+// first cleans stored neighborhoods that were captured as descriptive prose
+// (which also unblocks their geocoding), then re-queues listings that were
+// checked but never located (no coordinates, no station) and resolves them in
+// the background using the improved geocoding. Returns how many neighborhoods
+// were cleaned and listings re-queued; the resolution continues after the
+// response.
+func (s *Server) handleReResolveMetro(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := ctxOf(r)
+	defer cancel()
+	cleaned, err := s.store.CleanStoredNeighborhoods(ctx, scraper.CleanNeighborhood)
+	if err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	n, err := s.store.ResetUnlocatedMetro(ctx)
+	if err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	if n > 0 {
+		// Resolving geocodes politely (~1 req/s), so do it in the background and
+		// return immediately, like POST /api/scrape.
+		go func() {
+			bg, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+			defer cancel()
+			_, _ = s.sched.ResolvePendingMetro(bg)
+		}()
+	}
+	writeJSON(w, 202, map[string]int{"cleaned": cleaned, "reset": n})
 }
 
 // ---- sites ----
