@@ -121,9 +121,14 @@ function pollDuringScrape() {
 let listFilterTimer;
 let favoritesOnly = false;
 let itemsById = new Map(); // id -> property, for the detail view
+const DEFAULT_CITY = "São Paulo"; // pre-selected once the city is available
+let cityDefaultApplied = false;
 ["#f-q", "#f-city", "#f-neigh", "#f-minprice", "#f-maxprice", "#f-minbeds", "#f-minarea", "#f-status", "#f-sort"].forEach((sel) =>
   $(sel).addEventListener("input", () => { clearTimeout(listFilterTimer); listFilterTimer = setTimeout(loadListings, 300); })
 );
+// A manual city choice (including "All cities") sticks — don't re-apply the
+// São Paulo default over it on the next refresh.
+$("#f-city").addEventListener("input", () => { cityDefaultApplied = true; });
 $("#f-fav").addEventListener("click", () => {
   favoritesOnly = !favoritesOnly;
   $("#f-fav").textContent = (favoritesOnly ? "♥" : "♡") + " Favorites";
@@ -133,6 +138,7 @@ $("#f-fav").addEventListener("click", () => {
 $("#f-clear").addEventListener("click", () => {
   ["#f-q", "#f-neigh", "#f-minprice", "#f-maxprice", "#f-minbeds", "#f-minarea"].forEach((s) => ($(s).value = ""));
   $("#f-city").value = ""; $("#f-status").value = ""; $("#f-sort").value = "newest";
+  cityDefaultApplied = true; // "Clear" means all cities — keep it that way
   if (favoritesOnly) { favoritesOnly = false; $("#f-fav").textContent = "♡ Favorites"; $("#f-fav").classList.remove("active-toggle"); }
   loadListings();
 });
@@ -174,6 +180,13 @@ async function loadCities() {
       ...cities.map((c) => el("option", { value: c, text: c, selected: c === current }))
     );
     sel.value = current; // keep selection even if it's no longer in the list
+    // Default to São Paulo the first time it's available, unless the user has
+    // already picked a city. Refilter so the grid matches the new selection.
+    if (!cityDefaultApplied && current === "" && cities.includes(DEFAULT_CITY)) {
+      cityDefaultApplied = true;
+      sel.value = DEFAULT_CITY;
+      loadListings();
+    }
   } catch (e) { /* non-fatal */ }
 }
 
