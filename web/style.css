@@ -133,7 +133,10 @@ label input,label select{margin-top:4px}
 .leaflet-popup-content{margin:8px 10px;font:13px system-ui,sans-serif}
 
 /* listings map view */
-.listings-map{height:72vh;min-height:420px;border-radius:10px;overflow:hidden;border:1px solid var(--line);background:var(--panel2)}
+/* position+z-index makes this its own stacking context so Leaflet's internal
+   z-indexes (panes up to 700, controls 1000) stay trapped here and don't paint
+   over the detail overlay (.detail, z-index 200). */
+.listings-map{position:relative;z-index:0;height:72vh;min-height:420px;border-radius:10px;overflow:hidden;border:1px solid var(--line);background:var(--panel2)}
 .listings-map .leaflet-container{background:var(--panel2)}
 .map-pop{display:flex;flex-direction:column;gap:6px;min-width:150px}
 .map-pop .map-pop-price{font-size:15px;font-weight:700;color:var(--accent2)}
