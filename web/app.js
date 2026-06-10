@@ -120,6 +120,8 @@ function pollDuringScrape() {
 /* ---------- listings ---------- */
 let listFilterTimer;
 let favoritesOnly = false;
+let mapView = false;        // listings shown as a map instead of the card grid
+let listingsMap;            // current Leaflet map for the listings view, torn down on leave
 let itemsById = new Map(); // id -> property, for the detail view
 const DEFAULT_CITY = "São Paulo"; // pre-selected once the city is available
 let cityDefaultApplied = false;
@@ -133,6 +135,20 @@ $("#f-fav").addEventListener("click", () => {
   favoritesOnly = !favoritesOnly;
   $("#f-fav").textContent = (favoritesOnly ? "♥" : "♡") + " Favorites";
   $("#f-fav").classList.toggle("active-toggle", favoritesOnly);
+  loadListings();
+});
+// Toggle between the card grid and a full map plotting every located listing in
+// the current (filtered) result set. Reuses the same filters — flipping the view
+// just re-renders the listings we already query.
+$("#f-map").addEventListener("click", () => {
+  mapView = !mapView;
+  $("#f-map").textContent = (mapView ? "▤ Grid" : "🗺 Map");
+  $("#f-map").setAttribute("aria-pressed", mapView ? "true" : "false");
+  $("#f-map").classList.toggle("active-toggle", mapView);
+  $("#grid").classList.toggle("hidden", mapView);
+  $("#map").classList.toggle("hidden", !mapView);
+  // Drop the Leaflet instance when leaving the map so we don't leak it.
+  if (!mapView && listingsMap) { listingsMap.remove(); listingsMap = undefined; }
   loadListings();
 });
 $("#f-clear").addEventListener("click", () => {
@@ -156,14 +172,60 @@ async function loadListings() {
     const items = await api("/api/properties?" + p);
     itemsById = new Map(items.map((it) => [String(it.id), it]));
     $("#count").textContent = items.length + " listing(s)";
+    if (mapView) { renderListingsMap(items); return; }
     if (!items.length) {
       grid.replaceChildren(el(".empty", null, "No listings yet. Configure sites, set your filters, then hit ", el("b", { text: "Scrape now" }), "."));
       return;
     }
     grid.replaceChildren(...items.map(cardNode));
   } catch (e) {
-    grid.replaceChildren(el(".empty", { text: "Error: " + e.message }));
+    const target = mapView ? $("#map") : grid;
+    target.replaceChildren(el(".empty", { text: "Error: " + e.message }));
   }
+}
+
+// renderListingsMap plots every located listing in the current result set on one
+// OSM map, a pin per listing whose popup opens the full detail view. Listings not
+// yet geocoded (latitude/longitude still 0) can't be placed, so we note how many
+// of the total are actually on the map.
+function renderListingsMap(items) {
+  const mapEl = $("#map");
+  if (listingsMap) { listingsMap.remove(); listingsMap = undefined; }
+  mapEl.replaceChildren(); // clear any prior empty-state before Leaflet takes over
+
+  if (typeof L === "undefined") {
+    mapEl.replaceChildren(el(".empty", { text: "Map library failed to load." }));
+    return;
+  }
+  const located = items.filter((p) => p.latitude && p.longitude);
+  $("#count").textContent = `${items.length} listing(s) · ${located.length} on map`;
+  if (!located.length) {
+    mapEl.replaceChildren(el(".empty", null,
+      "None of these listings are geocoded yet. Open a few to locate them, or run a ",
+      el("b", { text: "Scrape now" }), " to resolve their locations."));
+    return;
+  }
+
+  listingsMap = L.map(mapEl, { scrollWheelZoom: true, attributionControl: true });
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19, attribution: "© OpenStreetMap",
+  }).addTo(listingsMap);
+
+  const pts = [];
+  for (const p of located) {
+    const pt = [p.latitude, p.longitude];
+    pts.push(pt);
+    const popup = el(".map-pop", null,
+      el(".map-pop-price", { text: brl(p.price) }),
+      el(".map-pop-title", { text: p.title || "(untitled listing)" }),
+      el(".map-pop-addr", { text: p.neighborhood || p.address || "" }),
+      el("button.btn.small", { text: "View details", onclick: () => { listingsMap.closePopup(); openDetail(p); } })
+    );
+    L.marker(pt).addTo(listingsMap).bindPopup(popup);
+  }
+  listingsMap.fitBounds(pts, { padding: [40, 40], maxZoom: 16 });
+  // The container was display:none until this toggle; recompute size so tiles fill it.
+  setTimeout(() => listingsMap && listingsMap.invalidateSize(), 60);
 }
 
 // loadCities (re)populates the city filter dropdown from the distinct
