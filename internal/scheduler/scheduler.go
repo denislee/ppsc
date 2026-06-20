@@ -90,9 +90,17 @@ func (sc *Scheduler) Loop(ctx context.Context) {
 	}
 }
 
-// RunAll scrapes every enabled site once. Returns the number of newly added
-// properties. Safe to call concurrently — overlapping calls are skipped.
-func (sc *Scheduler) RunAll(ctx context.Context) (int, error) {
+// RunAll scrapes every enabled site once from scratch. Returns the number of
+// newly added properties. Safe to call concurrently — overlapping calls are
+// skipped.
+func (sc *Scheduler) RunAll(ctx context.Context) (int, error) { return sc.Run(ctx, false) }
+
+// Run scrapes the enabled sites once and runs the photo/metro passes. When
+// resume is true it skips sites already completed in the interrupted run
+// (recorded in the persisted scrape state) and continues from there; when false
+// it starts a fresh pass. Progress is persisted per site so a process killed
+// mid-run can be resumed (or started over) afterwards.
+func (sc *Scheduler) Run(ctx context.Context, resume bool) (int, error) {
 	sc.mu.Lock()
 	if sc.running {
 		sc.mu.Unlock()
@@ -122,12 +130,30 @@ func (sc *Scheduler) RunAll(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
+	done, err := sc.store.BeginScrape(ctx, resume)
+	if err != nil {
+		return 0, err
+	}
+	doneSet := make(map[int64]bool, len(done))
+	for _, id := range done {
+		doneSet[id] = true
+	}
+	if resume {
+		slog.Info("resuming scrape", "already_done", len(doneSet))
+	}
+
 	runStart := time.Now()
-	var totalNew int
-	var ranSites int
+	var totalNew, ranSites, skipped int
 	for _, site := range sites {
 		if !site.Enabled {
 			continue
+		}
+		if doneSet[site.ID] {
+			skipped++ // resume: this site already finished before the interruption
+			continue
+		}
+		if ctx.Err() != nil {
+			return sc.interrupted(totalNew, ranSites, ctx.Err())
 		}
 		ranSites++
 		started := time.Now()
@@ -143,22 +169,39 @@ func (sc *Scheduler) RunAll(ctx context.Context) (int, error) {
 				"site", site.Name, "seen", seen, "new", newCount, "took", elapsed)
 		}
 		_ = sc.store.UpdateSiteRun(ctx, site.ID, status, errMsg, newCount, time.Now())
+		_ = sc.store.MarkSiteScraped(ctx, site.ID)
 		totalNew += newCount
 	}
 
 	slog.Info("scrape run complete",
-		"sites", ranSites, "new", totalNew, "took", time.Since(runStart).Round(time.Millisecond))
+		"sites", ranSites, "resumed_skip", skipped, "new", totalNew, "took", time.Since(runStart).Round(time.Millisecond))
 
 	if set.DownloadPhotos {
 		sc.fetchPhotos(ctx, set, sites)
 	}
-
 	sc.resolveMetro(ctx, set)
 
+	if ctx.Err() != nil {
+		return sc.interrupted(totalNew, ranSites, ctx.Err())
+	}
+
+	_ = sc.store.FinishScrape(context.Background())
 	sc.mu.Lock()
 	sc.lastMsg = formatMsg(ranSites, totalNew)
 	sc.mu.Unlock()
 	return totalNew, nil
+}
+
+// interrupted records that the pass was cut short (so it stays resumable) and
+// returns the run's partial result. The run's own context is cancelled here, so
+// the bookkeeping write uses a fresh background context.
+func (sc *Scheduler) interrupted(totalNew, ranSites int, cause error) (int, error) {
+	_ = sc.store.MarkScrapeInterrupted(context.Background())
+	slog.Warn("scrape interrupted — resumable", "sites_this_pass", ranSites, "new", totalNew)
+	sc.mu.Lock()
+	sc.lastMsg = time.Now().Format("15:04:05") + " — scrape interrupted (resumable)"
+	sc.mu.Unlock()
+	return totalNew, cause
 }
 
 // fetchPhotos visits the detail page of each listing that still needs photos

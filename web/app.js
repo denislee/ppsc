@@ -80,20 +80,40 @@ async function refreshStatus() {
       )
     );
     const sc = s.scheduler;
-    $("#sched").textContent = sc.running ? "⏳ scraping…" : sc.message || "idle";
-    $("#scrapeBtn").disabled = !!sc.running;
+    const sp = s.scrape || {};
+    const resumeBtn = $("#resumeBtn"), scrapeBtn = $("#scrapeBtn");
+    const resumable = !!sp.resumable && !sc.running;
+    if (sc.running) {
+      $("#sched").textContent = sp.total ? `⏳ scraping… (${sp.done}/${sp.total})` : "⏳ scraping…";
+    } else if (resumable) {
+      $("#sched").textContent = `⚠ scrape interrupted — ${sp.done}/${sp.total} sites done`;
+    } else {
+      $("#sched").textContent = sc.message || "idle";
+    }
+    // Offer Resume only when a previous pass was interrupted; then "Scrape now"
+    // becomes an explicit "Start over".
+    resumeBtn.classList.toggle("hidden", !resumable);
+    resumeBtn.disabled = !!sc.running;
+    resumeBtn.textContent = sp.pending ? `⏵ Resume (${sp.pending} left)` : "⏵ Resume";
+    scrapeBtn.textContent = resumable ? "↻ Start over" : "⟳ Scrape now";
+    scrapeBtn.disabled = !!sc.running;
     return sc.running;
   } catch (e) { /* transient */ }
 }
 
-$("#scrapeBtn").addEventListener("click", async () => {
-  $("#scrapeBtn").disabled = true;
+async function startScrape(mode) {
+  $("#scrapeBtn").disabled = true; $("#resumeBtn").disabled = true;
   try {
-    await api("/api/scrape", { method: "POST" });
-    toast("Scrape started…");
+    await api("/api/scrape" + (mode === "resume" ? "?mode=resume" : ""), { method: "POST" });
+    toast(mode === "resume" ? "Resuming scrape…" : "Scrape started…");
     pollDuringScrape();
-  } catch (e) { toast(e.message, true); $("#scrapeBtn").disabled = false; }
-});
+  } catch (e) {
+    toast(e.message, true);
+    $("#scrapeBtn").disabled = false; $("#resumeBtn").disabled = false;
+  }
+}
+$("#scrapeBtn").addEventListener("click", () => startScrape("restart"));
+$("#resumeBtn").addEventListener("click", () => startScrape("resume"));
 
 $("#reresolveMetroBtn").addEventListener("click", async () => {
   const btn = $("#reresolveMetroBtn");

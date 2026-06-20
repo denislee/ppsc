@@ -104,6 +104,15 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
 	city  TEXT NOT NULL DEFAULT '',
 	found INTEGER NOT NULL DEFAULT 0
 );
+
+-- Progress of the current/last scrape pass, so an abruptly-stopped run can be
+-- resumed (continue the sites not yet done) or started over. A single row.
+CREATE TABLE IF NOT EXISTS scrape_state (
+	id         INTEGER PRIMARY KEY CHECK (id = 1),
+	status     TEXT NOT NULL DEFAULT 'idle',  -- idle | running | interrupted
+	started_at TIMESTAMP,
+	done_sites TEXT NOT NULL DEFAULT ''        -- CSV of site IDs completed this run
+);
 `)
 	if err != nil {
 		return err

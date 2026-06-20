@@ -84,18 +84,43 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 500, err.Error())
 		return
 	}
+	state, _ := s.store.GetScrapeState(ctx)
+	sites, _ := s.store.ListSites(ctx)
+	done := make(map[int64]bool, len(state.DoneSites))
+	for _, id := range state.DoneSites {
+		done[id] = true
+	}
+	var enabled, pending int
+	for _, st := range sites {
+		if st.Enabled {
+			enabled++
+			if !done[st.ID] {
+				pending++
+			}
+		}
+	}
 	writeJSON(w, 200, map[string]any{
 		"stats":     stats,
 		"scheduler": s.sched.Status(),
+		"scrape": map[string]any{
+			"status":     state.Status,
+			"resumable":  state.Status == "interrupted",
+			"pending":    pending, // enabled sites not yet done this run
+			"done":       enabled - pending,
+			"total":      enabled,
+			"started_at": state.StartedAt,
+		},
 	})
 }
 
 func (s *Server) handleScrape(w http.ResponseWriter, r *http.Request) {
-	// Run in the background so the HTTP request returns immediately.
+	resume := r.URL.Query().Get("mode") == "resume"
+	// Run in the background so the HTTP request returns immediately. The timeout
+	// is generous because a full pass across all sites' pages can be lengthy.
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
-		_, _ = s.sched.RunAll(ctx)
+		_, _ = s.sched.Run(ctx, resume)
 	}()
 	writeJSON(w, 202, map[string]string{"status": "started"})
 }

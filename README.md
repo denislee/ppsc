@@ -30,7 +30,10 @@ hit **Scrape now** (or let the scheduler run on its interval).
 - **Storage** — pure-Go SQLite (`modernc.org/sqlite`, no CGO). Sites, settings,
   and de-duplicated listings live in `ppsc.db`.
 - **Scheduler** — background loop scrapes every *N* minutes (0 = manual only).
-  New listings are kept; re-seen ones just refresh `last_seen`/price.
+  New listings are kept; re-seen ones just refresh `last_seen`/price. Progress is
+  tracked per site, so if the process is killed mid-pass the next launch detects
+  the interrupted run and the top bar offers **Resume** (continue the sites that
+  weren't done) or **Start over** (a fresh full pass).
 - **Scrapers** — two strategies, both fully configurable from the UI so you can
   add **any** site without writing code:
   - **`css`** — parse server-rendered HTML with CSS selectors (`goquery`).

@@ -56,6 +56,12 @@ func main() {
 		slog.Error("seed defaults", "err", err)
 	}
 
+	// A 'running' scrape state left behind means the previous process died
+	// mid-pass. Flag it interrupted so the UI can offer resume or start-over.
+	if interrupted, _ := st.MarkInterruptedIfRunning(ctx); interrupted {
+		slog.Warn("previous scrape was interrupted; resume or start over from the web UI")
+	}
+
 	fetcher := scraper.NewFetcher()
 	chromePath := scraper.FindChrome()
 	if chromePath == "" {
