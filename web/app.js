@@ -705,7 +705,9 @@ document.addEventListener("keydown", (e) => {
 // carousel (photo paging) or on the map are left alone. On larger touch screens
 // (no live drag) a horizontal flick still pages instantly.
 let swipeX = 0, swipeY = 0, swiping = false, swipeAxis = null; // axis: "h" | "v" | null
-let dragging = false; // true once a horizontal drag has the card glued to the finger
+let dragging = false;  // true once a horizontal drag has the card glued to the finger
+let draggingV = false; // true once a downward pull-to-dismiss has the card glued
+let atTop = false;     // whether the overlay was scrolled to the top at touchstart
 const detailEl = $("#detail");
 const detailInner = () => $("#detailInner");
 
@@ -722,7 +724,8 @@ detailEl.addEventListener("touchstart", (e) => {
   if ((car && car.scrollWidth > car.clientWidth + 4) || e.target.closest(".detail-map")) {
     swiping = false; return;
   }
-  swiping = true; swipeAxis = null; dragging = false;
+  swiping = true; swipeAxis = null; dragging = false; draggingV = false;
+  atTop = detailEl.scrollTop <= 0; // only a pull from the very top dismisses
   swipeX = e.touches[0].clientX; swipeY = e.touches[0].clientY;
 }, { passive: true });
 // Lock the gesture to an axis on first movement. Once it's horizontal, claim it
@@ -734,9 +737,13 @@ detailEl.addEventListener("touchmove", (e) => {
   const dx = e.touches[0].clientX - swipeX, dy = e.touches[0].clientY - swipeY;
   if (!swipeAxis && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
     swipeAxis = Math.abs(dx) > Math.abs(dy) ? "h" : "v";
-    if (swipeAxis === "h" && detailMQ.matches) {
+    if (detailMQ.matches && swipeAxis === "h") {
       dragging = true;
       detailInner().style.transition = "none"; // follow the finger with zero lag
+    } else if (detailMQ.matches && swipeAxis === "v" && atTop && dy > 0) {
+      // At the very top, a downward pull peels the card away to dismiss it.
+      draggingV = true;
+      detailInner().style.transition = "none";
     }
   }
   if (swipeAxis === "h") {
@@ -747,6 +754,14 @@ detailEl.addEventListener("touchmove", (e) => {
       inner.style.transform = `translateX(${off}px)`;
       inner.style.opacity = String(Math.max(0.5, 1 - Math.abs(off) / (window.innerWidth || 1)));
     }
+  } else if (draggingV) {
+    e.preventDefault();
+    const off = Math.max(0, dy); // downward only; pushing back up rests at the top
+    const inner = detailInner();
+    const prog = Math.min(1, off / (window.innerHeight || 1));
+    inner.style.transform = `translateY(${off}px)`;
+    inner.style.opacity = String(1 - prog * 0.35);
+    detailEl.style.background = `rgba(0,0,0,${0.92 * (1 - prog * 0.7)})`; // fade the backdrop
   }
 }, { passive: false });
 detailEl.addEventListener("touchend", (e) => {
@@ -754,6 +769,15 @@ detailEl.addEventListener("touchend", (e) => {
   swiping = false;
   const t = e.changedTouches[0];
   const dx = t.clientX - swipeX, dy = t.clientY - swipeY;
+  if (draggingV) {
+    draggingV = false;
+    e.preventDefault();
+    const off = Math.max(0, dy);
+    const threshold = Math.min(140, (window.innerHeight || 600) * 0.22);
+    if (off > threshold) dismissDetailDown(); // pulled far enough → close
+    else snapBackDetailV();                   // didn't cross → settle back at the top
+    return;
+  }
   if (dragging) {
     dragging = false;
     e.preventDefault(); // suppress the click this gesture would otherwise synthesize
@@ -775,7 +799,57 @@ detailEl.addEventListener("touchend", (e) => {
 detailEl.addEventListener("touchcancel", () => {
   swiping = false;
   if (dragging) { dragging = false; snapBackDetail(); }
+  else if (draggingV) { draggingV = false; snapBackDetailV(); }
 }, { passive: true });
+
+// snapBackDetailV settles the card back at the top when a pull-to-dismiss is
+// released short of the threshold; dismissDetailDown slides it the rest of the
+// way down and closes the overlay. Both also restore the faded backdrop.
+function snapBackDetailV() {
+  const inner = detailInner();
+  detailSliding = true;
+  inner.classList.add("sliding");
+  inner.style.transition = "";
+  detailEl.style.transition = "background-color .22s ease";
+  void inner.offsetWidth; // lock the dragged position so the return animates
+  inner.style.transform = "translateY(0)";
+  inner.style.opacity = "1";
+  detailEl.style.background = "";
+  let done = false;
+  const finish = () => {
+    if (done) return; done = true;
+    inner.removeEventListener("transitionend", finish);
+    inner.classList.remove("sliding");
+    inner.style.transform = inner.style.opacity = inner.style.transition = "";
+    detailEl.style.transition = "";
+    detailSliding = false;
+  };
+  inner.addEventListener("transitionend", finish);
+  setTimeout(finish, 280);
+}
+function dismissDetailDown() {
+  const inner = detailInner();
+  detailSliding = true;
+  inner.classList.add("sliding");
+  inner.style.transition = "";
+  detailEl.style.transition = "background-color .22s ease";
+  void inner.offsetWidth;
+  inner.style.transform = "translateY(100%)";
+  inner.style.opacity = "0";
+  detailEl.style.background = "rgba(0,0,0,0)";
+  let done = false;
+  const finish = () => {
+    if (done) return; done = true;
+    inner.removeEventListener("transitionend", finish);
+    closeDetail(); // hide overlay + tear down map/state
+    inner.classList.remove("sliding");
+    inner.style.transform = inner.style.opacity = inner.style.transition = "";
+    detailEl.style.transition = ""; detailEl.style.background = "";
+    detailSliding = false;
+  };
+  inner.addEventListener("transitionend", finish);
+  setTimeout(finish, 340);
+}
 
 /* ---------- sites ---------- */
 let sites = [];
