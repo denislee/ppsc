@@ -569,14 +569,85 @@ function closeDetail() {
 // navigateDetail steps to the previous/next listing in the current grid order
 // while the detail view is open. delta is -1 (previous) or +1 (next). Clamps at
 // the ends — itemsById is a Map, so its key order matches the rendered grid.
+// Keyboard paging swaps instantly; the mobile touch handler drives the animated
+// drag/slide directly (slideDetail / snapBackDetail below).
+const detailMQ = window.matchMedia("(max-width: 860px)");
+let detailSliding = false; // true while a commit/snap-back transition is in flight
 function navigateDetail(delta) {
-  if ($("#detail").classList.contains("hidden")) return;
+  const next = detailNeighbor(delta);
+  if (next) openDetail(next);
+}
+
+// detailNeighbor returns the listing `delta` steps from the open one, or null at
+// the ends / when the detail view is closed.
+function detailNeighbor(delta) {
+  if ($("#detail").classList.contains("hidden")) return null;
   const ids = [...itemsById.keys()];
   const i = ids.indexOf(String(currentDetailId));
   const j = i + delta;
-  if (i === -1 || j < 0 || j >= ids.length) return; // already at an end
-  const next = itemsById.get(ids[j]);
-  if (next) openDetail(next);
+  if (i === -1 || j < 0 || j >= ids.length) return null;
+  return itemsById.get(ids[j]) || null;
+}
+
+// slideDetail finishes a swipe: it carries the current card the rest of the way
+// off-screen in the swipe direction, swaps in the next listing, then slides it in
+// from the opposite edge. Picks up from wherever the live drag left the card
+// (clearing the drag's transition:none and locking that spot as the start frame),
+// so the throw continues seamlessly from the finger. delta>0 (next) exits left.
+function slideDetail(next, delta) {
+  const inner = $("#detailInner");
+  const outX = delta > 0 ? "-100%" : "100%"; // current card exits this way
+  const inX = delta > 0 ? "100%" : "-100%";  // next card enters from here
+  detailSliding = true;
+  inner.classList.add("sliding");
+  inner.style.transition = "";   // re-enable the .sliding transition (drag set it to none)
+  void inner.offsetWidth;        // lock the current dragged position as the start frame
+  inner.style.transform = `translateX(${outX})`;
+  inner.style.opacity = "0";
+  let swapped = false;
+  const swap = () => {
+    if (swapped) return;
+    swapped = true;
+    inner.removeEventListener("transitionend", swap);
+    openDetail(next);                          // synchronous content swap
+    inner.style.transition = "none";           // jump incoming to the opposite edge
+    inner.style.transform = `translateX(${inX})`;
+    inner.style.opacity = "0";
+    void inner.offsetWidth;                     // force reflow so the slide-in animates
+    inner.style.transition = "";                // hand back to .sliding's transition
+    inner.style.transform = "translateX(0)";
+    inner.style.opacity = "1";
+    const cleanup = () => {
+      inner.removeEventListener("transitionend", cleanup);
+      inner.classList.remove("sliding");
+      inner.style.transform = inner.style.opacity = inner.style.transition = "";
+      detailSliding = false;
+    };
+    inner.addEventListener("transitionend", cleanup);
+    setTimeout(cleanup, 320); // fallback if transitionend doesn't fire
+  };
+  inner.addEventListener("transitionend", swap);
+  setTimeout(swap, 320); // fallback if the exit transition doesn't fire
+}
+
+// snapBackDetail eases the card back to rest when a drag is released without
+// crossing the commit threshold (or there's no neighbour to page to).
+function snapBackDetail() {
+  const inner = $("#detailInner");
+  detailSliding = true;
+  inner.classList.add("sliding");
+  inner.style.transition = "";
+  void inner.offsetWidth; // lock the dragged position so the return animates
+  inner.style.transform = "translateX(0)";
+  inner.style.opacity = "1";
+  const done = () => {
+    inner.removeEventListener("transitionend", done);
+    inner.classList.remove("sliding");
+    inner.style.transform = inner.style.opacity = inner.style.transition = "";
+    detailSliding = false;
+  };
+  inner.addEventListener("transitionend", done);
+  setTimeout(done, 260); // fallback (also covers a near-zero drag that won't transition)
 }
 
 // navigatePhoto highlights and scrolls to the previous/next photo of the open
@@ -609,45 +680,84 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// Touch: a horizontal swipe pages between properties (the mobile equivalent of
-// h/l). The photo carousel and the Leaflet map own their own horizontal
-// gestures, so swipes that start on a *scrollable* carousel (photo paging) or on
-// the map are left alone; everywhere else on the detail view pages properties.
+// Touch: on mobile the detail card is glued to the finger during a horizontal
+// swipe (Tinder-style) — it drags live, then either completes the throw to the
+// next/previous property or springs back. The photo carousel and the Leaflet map
+// own their own horizontal gestures, so swipes that start on a *scrollable*
+// carousel (photo paging) or on the map are left alone. On larger touch screens
+// (no live drag) a horizontal flick still pages instantly.
 let swipeX = 0, swipeY = 0, swiping = false, swipeAxis = null; // axis: "h" | "v" | null
+let dragging = false; // true once a horizontal drag has the card glued to the finger
 const detailEl = $("#detail");
+const detailInner = () => $("#detailInner");
+
+// While dragging, resist past the ends and fade slightly with distance so a throw
+// telegraphs itself. dx is the raw finger delta; returns the pixels to translate.
+function dragOffset(dx) {
+  const atEnd = !detailNeighbor(dx < 0 ? 1 : -1);
+  return atEnd ? dx * 0.3 : dx; // rubber-band when there's nowhere to page
+}
+
 detailEl.addEventListener("touchstart", (e) => {
-  if (e.touches.length !== 1) { swiping = false; return; }
+  if (e.touches.length !== 1 || detailSliding) { swiping = false; return; }
   const car = e.target.closest(".detail-photos");
   if ((car && car.scrollWidth > car.clientWidth + 4) || e.target.closest(".detail-map")) {
     swiping = false; return;
   }
-  swiping = true; swipeAxis = null;
+  swiping = true; swipeAxis = null; dragging = false;
   swipeX = e.touches[0].clientX; swipeY = e.touches[0].clientY;
 }, { passive: true });
 // Lock the gesture to an axis on first movement. Once it's horizontal, claim it
 // with preventDefault so the browser doesn't steal it for its back/forward
 // edge-swipe (which would navigate away from the page) — letting vertical pans
-// scroll the overlay as normal.
+// scroll the overlay as normal. On mobile a horizontal lock starts a live drag.
 detailEl.addEventListener("touchmove", (e) => {
   if (!swiping || e.touches.length !== 1) return;
   const dx = e.touches[0].clientX - swipeX, dy = e.touches[0].clientY - swipeY;
   if (!swipeAxis && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
     swipeAxis = Math.abs(dx) > Math.abs(dy) ? "h" : "v";
+    if (swipeAxis === "h" && detailMQ.matches) {
+      dragging = true;
+      detailInner().style.transition = "none"; // follow the finger with zero lag
+    }
   }
-  if (swipeAxis === "h") e.preventDefault();
+  if (swipeAxis === "h") {
+    e.preventDefault();
+    if (dragging) {
+      const off = dragOffset(dx);
+      const inner = detailInner();
+      inner.style.transform = `translateX(${off}px)`;
+      inner.style.opacity = String(Math.max(0.5, 1 - Math.abs(off) / (window.innerWidth || 1)));
+    }
+  }
 }, { passive: false });
 detailEl.addEventListener("touchend", (e) => {
   if (!swiping) return;
   swiping = false;
   const t = e.changedTouches[0];
   const dx = t.clientX - swipeX, dy = t.clientY - swipeY;
-  // Predominantly-horizontal swipe past the threshold → page; ignore taps and
-  // vertical scrolls. Suppress the click this gesture would otherwise synthesize.
+  if (dragging) {
+    dragging = false;
+    e.preventDefault(); // suppress the click this gesture would otherwise synthesize
+    const delta = dx < 0 ? 1 : -1; // swipe left → next, swipe right → previous
+    const next = detailNeighbor(delta);
+    const threshold = Math.min(110, (window.innerWidth || 320) * 0.28);
+    if (next && Math.abs(dx) > threshold) slideDetail(next, delta); // commit the throw
+    else snapBackDetail();                                          // didn't cross → spring back
+    return;
+  }
+  // No live drag (larger touch screens): keep the instant horizontal-flick paging.
   if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.4) {
     e.preventDefault();
-    navigateDetail(dx < 0 ? 1 : -1); // swipe left → next, swipe right → previous
+    navigateDetail(dx < 0 ? 1 : -1);
   }
 }, { passive: false });
+// A cancelled gesture (e.g. a system interruption) should not leave the card stuck
+// off-centre — ease it back.
+detailEl.addEventListener("touchcancel", () => {
+  swiping = false;
+  if (dragging) { dragging = false; snapBackDetail(); }
+}, { passive: true });
 
 /* ---------- sites ---------- */
 let sites = [];
