@@ -118,6 +118,14 @@ label input,label select{margin-top:4px}
 .detail-photos img.active{outline-color:var(--accent)}
 /* photo-position pill over the carousel; hidden on desktop (vertical stack) */
 .carousel-counter{display:none}
+/* floating prev/next pagers — mobile only (shown in the @media block below) */
+.detail-nav{display:none;position:fixed;top:50%;transform:translateY(-50%);z-index:201;
+  width:44px;height:44px;border-radius:50%;border:1px solid var(--line);
+  background:rgba(20,20,20,.62);color:var(--text);font-size:26px;line-height:1;
+  align-items:center;justify-content:center;cursor:pointer;-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
+.detail-nav.prev{left:10px}
+.detail-nav.next{right:10px}
+.detail-nav:disabled{opacity:.28;cursor:default}
 .gallery-empty{color:var(--muted);text-align:center;padding:40px;background:var(--panel);border:1px solid var(--line);border-radius:10px}
 .detail-body{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px;position:sticky;top:48px;display:flex;flex-direction:column;gap:8px}
 .detail-body .badge{align-self:flex-start;display:inline-block;font-size:10px;padding:2px 6px;border-radius:6px;background:var(--accent);color:#fff}
@@ -168,6 +176,9 @@ label input,label select{margin-top:4px}
 
   /* sites: list above the editor instead of side-by-side */
   .split{grid-template-columns:1fr}
+
+  /* floating prev/next pagers, vertically centred on the screen edges */
+  .detail-nav{display:flex}
 
   /* detail overlay stacks photos (carousel) over the info panel */
   .detail{padding:44px 12px 24px}

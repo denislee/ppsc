@@ -514,6 +514,7 @@ async function openDetail(p) {
   );
   $("#detail").classList.remove("hidden");
   $("#detail").scrollTop = 0; // start each listing at the top when navigating
+  updateDetailNav(); // grey out the floating pagers at the ends of the list
 
   // Nearest station + map. Use what we already have; otherwise resolve on demand
   // (geocodes the address the first time, then it's cached on the server).
@@ -667,6 +668,23 @@ function navigatePhoto(delta) {
 
 $("#detailClose").addEventListener("click", closeDetail);
 $("#detail").addEventListener("click", (e) => { if (e.target.id === "detail") closeDetail(); });
+
+// Floating prev/next pagers (mobile). They page with the same slide animation as
+// a swipe on mobile, and instantly elsewhere; disabled at the ends of the list.
+function pageDetail(delta) {
+  if (detailSliding) return;
+  const next = detailNeighbor(delta);
+  if (!next) return;
+  if (detailMQ.matches) slideDetail(next, delta);
+  else openDetail(next);
+}
+function updateDetailNav() {
+  const prev = $("#detailPrev"), nxt = $("#detailNext");
+  if (prev) prev.disabled = !detailNeighbor(-1);
+  if (nxt) nxt.disabled = !detailNeighbor(1);
+}
+$("#detailPrev").addEventListener("click", () => pageDetail(-1));
+$("#detailNext").addEventListener("click", () => pageDetail(1));
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { closeDetail(); return; }
   if ($("#detail").classList.contains("hidden")) return;
