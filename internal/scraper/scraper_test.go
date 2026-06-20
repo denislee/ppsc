@@ -222,6 +222,11 @@ func TestCleanNeighborhood(t *testing.T) {
 		{"apartment heading -> bairro", "Apartamento para comprar com 2 quartos em Higienópolis, São Paulo", "Higienópolis"},
 		{"bairro with own comma kept", "Cobertura para alugar com 3 suítes em Jardim São Paulo, São Paulo", "Jardim São Paulo"},
 		{"prose with no recoverable bairro -> empty", "Casa para comprar com 3 quartos e 2 vagas", ""},
+		{"city-uf suffix stripped", "Mooca - São Paulo - SP", "Mooca"},
+		{"city-uf suffix stripped (multiword bairro)", "Barra Funda - São Paulo - SP", "Barra Funda"},
+		{"city-uf suffix stripped (other city)", "Alphaville Nova Esplanada - Votorantim - SP", "Alphaville Nova Esplanada"},
+		{"non-uf hyphen tail kept", "Sítio do Mandaqui - Zona Norte", "Sítio do Mandaqui - Zona Norte"},
+		{"heading then city-uf suffix -> bairro", "Apartamento para comprar com 2 quartos em Pinheiros - São Paulo - SP", "Pinheiros"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

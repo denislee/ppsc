@@ -601,14 +601,28 @@ func looksLikeListingProse(s string) bool {
 // a listing heading, e.g. "… 3 vagas em Vila Medeiros, São Paulo".
 var emSplitRe = regexp.MustCompile(`(?i)\s+em\s+`)
 
+// citySuffixRe matches a trailing " - <City> - <UF>" that some sources append to
+// the bairro, e.g. "Mooca - São Paulo - SP". Stripping it collapses these onto
+// the bare bairro so the filter dropdown isn't split between "Mooca" and
+// "Mooca - São Paulo - SP". The UF is restricted to the 27 Brazilian state codes
+// so legitimate hyphenated names (e.g. "Sítio do Mandaqui - Zona Norte") survive.
+var citySuffixRe = regexp.MustCompile(`(?i)\s+-\s+[^-]+\s+-\s+(?:AC|AL|AP|AM|BA|CE|DF|ES|GO|MA|MT|MS|MG|PA|PB|PR|PE|PI|RJ|RN|RS|RO|RR|SC|SP|SE|TO)\s*$`)
+
+// stripCitySuffix removes a trailing ", <City>" or " - <City> - <UF>" locality
+// tail from a bairro, leaving just the neighborhood name.
+func stripCitySuffix(n string) string {
+	return strings.TrimSpace(citySuffixRe.ReplaceAllString(n, ""))
+}
+
 // CleanNeighborhood normalises a scraped neighborhood. A clean value passes
-// through (whitespace-collapsed) unchanged. A descriptive heading captured by a
-// mis-targeted selector is reduced to the bairro mined from its trailing
-// "… em <Bairro>, <City>", or "" when no bairro can be recovered — an empty
-// neighborhood is better than prose polluting the filter dropdown and geocoding
-// queries (the latter being why such listings failed to locate on the map).
+// through (whitespace-collapsed, locality suffix stripped) unchanged otherwise.
+// A descriptive heading captured by a mis-targeted selector is reduced to the
+// bairro mined from its trailing "… em <Bairro>, <City>", or "" when no bairro
+// can be recovered — an empty neighborhood is better than prose polluting the
+// filter dropdown and geocoding queries (the latter being why such listings
+// failed to locate on the map).
 func CleanNeighborhood(raw string) string {
-	n := strings.Join(strings.Fields(raw), " ")
+	n := stripCitySuffix(strings.Join(strings.Fields(raw), " "))
 	if n == "" || !looksLikeListingProse(n) {
 		return n
 	}
@@ -617,6 +631,7 @@ func CleanNeighborhood(raw string) string {
 	if i := strings.LastIndex(tail, ","); i >= 0 {
 		tail = strings.TrimSpace(tail[:i]) // drop the trailing ", <City>"
 	}
+	tail = stripCitySuffix(tail)
 	if tail != "" && !looksLikeListingProse(tail) {
 		return tail
 	}
