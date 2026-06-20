@@ -2,9 +2,22 @@
 # Override the host/port or db path: `make run ADDR=127.0.0.1:9000 DB=/tmp/ppsc.db`
 
 APP   := ppsc
-ADDR  ?= 127.0.0.1:8080
+# Bind to all interfaces by default so others on your LAN can reach the UI.
+# Override to loopback-only with `make run ADDR=127.0.0.1:8080`.
+ADDR  ?= 0.0.0.0:8080
 DB    ?= ppsc.db
-URL   := http://$(ADDR)/
+# Port parsed out of ADDR (the part after the last ':') for the browse URLs.
+PORT  := $(lastword $(subst :, ,$(ADDR)))
+# The browser/health-check always targets loopback even when bound to 0.0.0.0.
+URL   := http://127.0.0.1:$(PORT)/
+
+# Best-effort LAN address to hand out to other devices on the network.
+ifeq ($(shell uname),Darwin)
+LAN_IP := $(shell ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)
+else
+LAN_IP := $(shell hostname -I 2>/dev/null | awk '{print $$1}' || true)
+LAN_IP := $(or $(LAN_IP),$(shell ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+'))
+endif
 
 # `make run` enables verbose debug logging by default. Turn it off with DEBUG=0.
 DEBUG ?= 1
@@ -23,7 +36,9 @@ endif
 
 ## run: run locally (debug logging) and open the web UI once it's ready
 run:
-	@echo "Starting ppsc on $(URL) — waiting for it to come up…"
+	@echo "Starting ppsc (bound to $(ADDR)) — waiting for it to come up…"
+	@echo "  local:   $(URL)"
+	@if [ -n "$(LAN_IP)" ]; then echo "  network: http://$(LAN_IP):$(PORT)/  (share this with others on your LAN)"; fi
 	@( for i in $$(seq 1 100); do \
 		if curl -fs -o /dev/null "$(URL)" 2>/dev/null; then \
 			echo "ppsc is up — opening $(URL)"; \

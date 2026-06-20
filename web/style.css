@@ -105,12 +105,15 @@ label input,label select{margin-top:4px}
 .photo-badge{position:absolute;bottom:8px;right:8px;background:rgba(0,0,0,.65);color:#fff;font-size:11px;padding:2px 7px;border-radius:20px}
 
 /* detail overlay */
-.detail{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:200;overflow-y:auto;padding:48px 16px 32px}
+.detail{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:200;overflow-y:auto;padding:48px 16px 32px;overscroll-behavior:contain}
 .gallery-close{position:fixed;top:14px;right:18px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:50%;width:38px;height:38px;font-size:18px;cursor:pointer;z-index:201}
 .detail-inner{max-width:980px;margin:0 auto;display:grid;grid-template-columns:1.4fr 1fr;gap:22px;align-items:start}
+.detail-gallery{position:relative;min-width:0}
 .detail-photos{display:flex;flex-direction:column;gap:12px;min-width:0}
 .detail-photos img{width:100%;border-radius:10px;background:var(--panel);outline:2px solid transparent;outline-offset:2px}
 .detail-photos img.active{outline-color:var(--accent)}
+/* photo-position pill over the carousel; hidden on desktop (vertical stack) */
+.carousel-counter{display:none}
 .gallery-empty{color:var(--muted);text-align:center;padding:40px;background:var(--panel);border:1px solid var(--line);border-radius:10px}
 .detail-body{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px;position:sticky;top:48px;display:flex;flex-direction:column;gap:8px}
 .detail-body .badge{align-self:flex-start;display:inline-block;font-size:10px;padding:2px 6px;border-radius:6px;background:var(--accent);color:#fff}
@@ -143,7 +146,70 @@ label input,label select{margin-top:4px}
 .map-pop .map-pop-title{font-size:12px;line-height:1.3;max-height:3.9em;overflow:hidden;color:var(--text)}
 .map-pop .map-pop-addr{font-size:11px;color:var(--muted)}
 .map-pop .btn{align-self:flex-start}
-@media(max-width:720px){.detail-inner{grid-template-columns:1fr}.detail-body{position:static}}
+
+/* ── responsive / mobile web ───────────────────────────────────────────────
+   Below ~860px the multi-column layouts (topbar, sites split, form grids,
+   detail overlay) collapse to single column and the toolbar reflows so the
+   whole UI stays usable down to small phones. */
+@media(max-width:860px){
+  /* topbar wraps: brand on top, stats + actions below */
+  .topbar{flex-wrap:wrap;gap:12px 16px;padding:10px 14px}
+  .stats{order:3;flex-basis:100%;gap:14px;flex-wrap:wrap}
+  .actions{margin-left:auto;flex-wrap:wrap;justify-content:flex-end;gap:8px 12px}
+  .sched{max-width:none;flex-basis:100%;text-align:right}
+
+  .tabs{padding:0 14px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .tab{white-space:nowrap}
+  .view{padding:14px}
+
+  /* sites: list above the editor instead of side-by-side */
+  .split{grid-template-columns:1fr}
+
+  /* detail overlay stacks photos (carousel) over the info panel */
+  .detail{padding:44px 12px 24px}
+  .detail-inner{grid-template-columns:1fr;gap:16px}
+  .detail-body{position:static}
+
+  /* photos become a horizontal swipe carousel: one photo per viewport, snapping
+     into place. Swiping it pages photos; swiping the body pages properties. */
+  .detail-photos{flex-direction:row;gap:0;overflow-x:auto;scroll-snap-type:x mandatory;
+    -webkit-overflow-scrolling:touch;scrollbar-width:none;overscroll-behavior-x:contain;touch-action:pan-x}
+  .detail-photos::-webkit-scrollbar{display:none}
+  .detail-photos img,.detail-photos img.active{flex:0 0 100%;width:100%;height:62vw;
+    max-height:400px;object-fit:cover;scroll-snap-align:center;outline:none}
+  .gallery-empty{height:62vw;max-height:400px;display:flex;align-items:center;justify-content:center}
+  .carousel-counter:not(.hidden){display:block;position:absolute;top:10px;right:10px;
+    background:rgba(0,0,0,.66);color:#fff;font-size:12px;font-weight:600;
+    padding:3px 9px;border-radius:20px;pointer-events:none}
+}
+
+@media(max-width:560px){
+  /* form pairs go single-column */
+  .grid2,.field-grid{grid-template-columns:1fr}
+
+  /* toolbar: each control on its own full-width row, with the
+     two price inputs and beds/area sharing a row via flex wrapping */
+  .toolbar{gap:8px}
+  .toolbar input,.toolbar select{max-width:none !important;width:100% !important;flex:1 1 100%}
+  .toolbar #f-minprice,.toolbar #f-maxprice,
+  .toolbar #f-minbeds,.toolbar #f-minarea{flex:1 1 45%}
+  .toolbar .btn{flex:1 1 auto}
+  .toolbar #count{flex-basis:100%}
+
+  /* roomier tap targets */
+  .btn{padding:9px 14px}
+  .tab{padding:12px 14px}
+
+  .listings-map{height:60vh;min-height:320px}
+  .detail-desc{max-height:160px}
+  .gallery-close{top:8px;right:10px}
+}
+
+@media(max-width:380px){
+  .stats{gap:10px}
+  .stat .n{font-size:16px}
+  .grid{grid-template-columns:1fr}
+}
 
 /* toast */
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);padding:12px 20px;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.4);z-index:100}

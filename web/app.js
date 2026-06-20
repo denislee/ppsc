@@ -429,6 +429,33 @@ async function openDetail(p) {
   if (p.area_m2) meta.push("📐 " + p.area_m2 + " m²");
 
   const photoWrap = el(".detail-photos", null, el(".gallery-empty", { text: "Loading photos…" }));
+  // On mobile photoWrap becomes a horizontal scroll-snap carousel; this counter
+  // overlays it ("3 / 12") and tracks which photo is centred. Hidden on desktop
+  // (CSS) and whenever there's 0–1 photo.
+  const photoCounter = el(".carousel-counter.hidden");
+  const gallery = el(".detail-gallery", null, photoWrap, photoCounter);
+  const updateCounter = () => {
+    if (galleryImgs.length > 1) {
+      photoCounter.textContent = `${currentPhotoIndex + 1} / ${galleryImgs.length}`;
+      photoCounter.classList.remove("hidden");
+    } else {
+      photoCounter.classList.add("hidden");
+    }
+  };
+  // Keep the counter and highlight in sync as the carousel is swiped (mobile).
+  // On desktop the photos stack vertically and photoWrap never scrolls, so this
+  // listener stays dormant there.
+  photoWrap.addEventListener("scroll", () => {
+    if (!galleryImgs.length) return;
+    const w = photoWrap.clientWidth || 1;
+    const idx = Math.max(0, Math.min(galleryImgs.length - 1, Math.round(photoWrap.scrollLeft / w)));
+    if (idx !== currentPhotoIndex) {
+      currentPhotoIndex = idx;
+      galleryImgs.forEach((im, i) => im.classList.toggle("active", i === idx));
+      updateCounter();
+    }
+  }, { passive: true });
+
   const mapEl = el(".detail-map");
   const metroSummary = el(".metro-summary", null, el("span.muted", { text: "Locating nearest station…" }));
   const cityFact = factRow("City", p.city); // value updated once geocoding resolves
@@ -460,7 +487,7 @@ async function openDetail(p) {
   });
 
   $("#detailInner").replaceChildren(
-    photoWrap,
+    gallery,
     el(".detail-body", null,
       p.status === "new" ? el("span.badge", { text: "NEW" }) : null,
       el(".detail-price", { text: brl(p.price) }),
@@ -528,6 +555,9 @@ async function openDetail(p) {
     photoWrap.replaceChildren(el(".gallery-empty", { text: "Error loading photos: " + e.message }));
     galleryImgs = [];
   }
+  currentPhotoIndex = 0;
+  if (galleryImgs[0]) galleryImgs[0].classList.add("active");
+  updateCounter();
 }
 function closeDetail() {
   if (detailMap) { detailMap.remove(); detailMap = undefined; }
@@ -558,7 +588,10 @@ function navigatePhoto(delta) {
   if (j === currentPhotoIndex && galleryImgs[j].classList.contains("active")) return;
   currentPhotoIndex = j;
   galleryImgs.forEach((img, idx) => img.classList.toggle("active", idx === j));
-  galleryImgs[j].scrollIntoView({ behavior: "auto", block: "center" });
+  // block:center centres it in the vertical desktop stack; inline:center pages
+  // the horizontal mobile carousel. Each axis is a no-op when there's nothing to
+  // scroll, so one call serves both layouts.
+  galleryImgs[j].scrollIntoView({ behavior: "auto", block: "center", inline: "center" });
 }
 
 $("#detailClose").addEventListener("click", closeDetail);
@@ -575,6 +608,46 @@ document.addEventListener("keydown", (e) => {
     case "h": case "ArrowLeft": e.preventDefault(); navigateDetail(-1); break;  // previous property
   }
 });
+
+// Touch: a horizontal swipe pages between properties (the mobile equivalent of
+// h/l). The photo carousel and the Leaflet map own their own horizontal
+// gestures, so swipes that start on a *scrollable* carousel (photo paging) or on
+// the map are left alone; everywhere else on the detail view pages properties.
+let swipeX = 0, swipeY = 0, swiping = false, swipeAxis = null; // axis: "h" | "v" | null
+const detailEl = $("#detail");
+detailEl.addEventListener("touchstart", (e) => {
+  if (e.touches.length !== 1) { swiping = false; return; }
+  const car = e.target.closest(".detail-photos");
+  if ((car && car.scrollWidth > car.clientWidth + 4) || e.target.closest(".detail-map")) {
+    swiping = false; return;
+  }
+  swiping = true; swipeAxis = null;
+  swipeX = e.touches[0].clientX; swipeY = e.touches[0].clientY;
+}, { passive: true });
+// Lock the gesture to an axis on first movement. Once it's horizontal, claim it
+// with preventDefault so the browser doesn't steal it for its back/forward
+// edge-swipe (which would navigate away from the page) — letting vertical pans
+// scroll the overlay as normal.
+detailEl.addEventListener("touchmove", (e) => {
+  if (!swiping || e.touches.length !== 1) return;
+  const dx = e.touches[0].clientX - swipeX, dy = e.touches[0].clientY - swipeY;
+  if (!swipeAxis && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
+    swipeAxis = Math.abs(dx) > Math.abs(dy) ? "h" : "v";
+  }
+  if (swipeAxis === "h") e.preventDefault();
+}, { passive: false });
+detailEl.addEventListener("touchend", (e) => {
+  if (!swiping) return;
+  swiping = false;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - swipeX, dy = t.clientY - swipeY;
+  // Predominantly-horizontal swipe past the threshold → page; ignore taps and
+  // vertical scrolls. Suppress the click this gesture would otherwise synthesize.
+  if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+    e.preventDefault();
+    navigateDetail(dx < 0 ? 1 : -1); // swipe left → next, swipe right → previous
+  }
+}, { passive: false });
 
 /* ---------- sites ---------- */
 let sites = [];

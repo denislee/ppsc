@@ -16,6 +16,12 @@ go build -o ppsc .
 
 Flags: `-addr`, `-db`, `-log` (empty = console only), `-photos` (photo dir), `-debug`.
 
+`make run` binds to `0.0.0.0:8080` so other devices on your LAN can reach the
+UI — it prints the shareable `http://<lan-ip>:8080/` address on startup while
+opening the local browser on loopback. Bind to loopback only with
+`make run ADDR=127.0.0.1:8080`. (The bare `./ppsc` binary still defaults to
+loopback-only `127.0.0.1:8080`; pass `-addr 0.0.0.0:8080` to expose it.)
+
 Open the URL, set your **Filters & Schedule**, enable the sites you want, then
 hit **Scrape now** (or let the scheduler run on its interval).
 
