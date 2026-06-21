@@ -452,12 +452,18 @@ func dedupePhotos(urls []string) []string {
 }
 
 // cssText returns the trimmed text of the first match of selector within s.
-// An empty selector means "use s itself".
+// An empty selector means the field is unset and yields "" — rather than the
+// whole card's text, which would feed parseInt/parseBRL a stray number (e.g. a
+// listing code) for any field a site doesn't expose. (cssAttr, by contrast,
+// does read an attribute off s itself when its selector is empty — used to pull
+// a URL/image attribute from the card element directly.)
 func cssText(s *goquery.Selection, selector string) string {
 	if selector == "" {
-		return strings.TrimSpace(s.Text())
+		return ""
 	}
-	return strings.TrimSpace(s.Find(selector).First().Text())
+	// Collapse internal whitespace (newlines/indentation between inline elements)
+	// to single spaces so multi-line card markup yields clean single-line text.
+	return strings.Join(strings.Fields(s.Find(selector).First().Text()), " ")
 }
 
 func cssAttr(s *goquery.Selection, selector, attr string) string {
